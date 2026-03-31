@@ -176,50 +176,41 @@ function ProductsTab({ products, onRefresh, showToast }) {
   const [editing, setEditing] = useState(null);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({});
+  const [menuOpen, setMenuOpen] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
 
   const categories = ["Audio Streamers", "Audio Zone Amplifiers", "Power Supplies", "Speakers", "Subwoofers", "Wire & Cable", "Insect Control"];
 
   const startAdd = () => {
     setForm({ sku: "", name: "", description: "", category: "Speakers", unit_price: "", sort_order: 0, active: true });
-    setAdding(true);
-    setEditing(null);
+    setAdding(true); setEditing(null);
   };
 
-  const startEdit = (p) => {
-    setForm({ ...p });
-    setEditing(p.id);
-    setAdding(false);
-  };
-
+  const startEdit = (p) => { setForm({ ...p }); setEditing(p.id); setAdding(false); setMenuOpen(null); };
   const cancel = () => { setEditing(null); setAdding(false); setForm({}); };
 
   const saveNew = async () => {
     if (!form.sku || !form.name || !form.unit_price) return showToast("SKU, name, and price are required", "error");
     await sb("products", { method: "POST", body: JSON.stringify({ ...form, unit_price: parseFloat(form.unit_price) }) });
-    showToast("Product added");
-    cancel();
-    onRefresh();
+    showToast("Product added"); cancel(); onRefresh();
   };
 
   const saveEdit = async () => {
     const { id, created_at, updated_at, ...rest } = form;
     await sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ ...rest, unit_price: parseFloat(rest.unit_price) }) });
-    showToast("Product updated");
-    cancel();
-    onRefresh();
+    showToast("Product updated"); cancel(); onRefresh();
   };
 
   const toggleActive = async (p) => {
     await sb(`products?id=eq.${p.id}`, { method: "PATCH", body: JSON.stringify({ active: !p.active }) });
     showToast(p.active ? "Product deactivated" : "Product activated");
-    onRefresh();
+    setConfirmAction(null); onRefresh();
   };
 
   const deleteProduct = async (p) => {
-    if (!confirm(`Delete ${p.sku}? This cannot be undone.`)) return;
     await sb(`products?id=eq.${p.id}`, { method: "DELETE" });
     showToast("Product deleted");
-    onRefresh();
+    setConfirmAction(null); onRefresh();
   };
 
   const grouped = categories.map((cat) => ({ cat, items: products.filter((p) => p.category === cat) })).filter((g) => g.items.length > 0);
@@ -256,7 +247,7 @@ function ProductsTab({ products, onRefresh, showToast }) {
                   <th style={thAdmin}>Name</th>
                   <th style={{ ...thAdmin, textAlign: "right" }}>Price</th>
                   <th style={{ ...thAdmin, textAlign: "center" }}>Active</th>
-                  <th style={{ ...thAdmin, textAlign: "right", width: 160 }}>Actions</th>
+                  <th style={{ ...thAdmin, textAlign: "right", width: 100 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -280,9 +271,22 @@ function ProductsTab({ products, onRefresh, showToast }) {
                         <span style={{ color: p.active ? "#38a169" : "#e53e3e", fontWeight: 600 }}>{p.active ? "Yes" : "No"}</span>
                       </td>
                       <td style={{ ...tdAdmin, textAlign: "right" }}>
-                        <button onClick={() => startEdit(p)} style={btnSmall}>Edit</button>
-                        <button onClick={() => toggleActive(p)} style={{ ...btnSmall, marginLeft: 4 }}>{p.active ? "Deactivate" : "Activate"}</button>
-                        <button onClick={() => deleteProduct(p)} style={{ ...btnSmall, marginLeft: 4, color: "#e53e3e" }}>Delete</button>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
+                          <button onClick={() => startEdit(p)} style={btnSmall}>Edit</button>
+                          <div style={{ position: "relative" }}>
+                            <button onClick={() => setMenuOpen(menuOpen === p.id ? null : p.id)} style={{ ...btnSmall, padding: "4px 6px", fontSize: 16, lineHeight: 1, letterSpacing: 1 }}>⋮</button>
+                            {menuOpen === p.id && (
+                              <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, background: "#fff", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", border: "1px solid #e2e8f0", zIndex: 100, minWidth: 150, overflow: "hidden" }}>
+                                <button onClick={() => { setMenuOpen(null); setConfirmAction({ type: "toggle", product: p }); }} style={menuItemStyle}>
+                                  {p.active ? "Deactivate" : "Activate"}
+                                </button>
+                                <button onClick={() => { setMenuOpen(null); setConfirmAction({ type: "delete", product: p }); }} style={{ ...menuItemStyle, color: "#e53e3e" }}>
+                                  Delete
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -298,6 +302,44 @@ function ProductsTab({ products, onRefresh, showToast }) {
           {ungrouped.map((p) => (
             <div key={p.id} style={{ padding: 8, fontSize: 13 }}>{p.sku} — {p.name} — ${parseFloat(p.unit_price).toLocaleString()}</div>
           ))}
+        </div>
+      )}
+
+      {/* Click-outside overlay to close kebab menu */}
+      {menuOpen && (
+        <div onClick={() => setMenuOpen(null)} style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 50 }} />
+      )}
+
+      {/* Confirmation modal */}
+      {confirmAction && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(15,32,39,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 48px rgba(0,0,0,0.2)", textAlign: "center" }}>
+            <div style={{ width: 56, height: 56, borderRadius: "50%", background: confirmAction.type === "delete" ? "#fed7d7" : "#fff3cd", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 28 }}>
+              {confirmAction.type === "delete" ? "🗑️" : "⚠️"}
+            </div>
+            <h3 style={{ margin: "0 0 8px", fontSize: 20, fontWeight: 700, color: "#1a1a2e" }}>
+              {confirmAction.type === "delete" ? "Delete Product" : (confirmAction.product.active ? "Deactivate Product" : "Activate Product")}
+            </h3>
+            <p style={{ margin: "0 0 8px", fontSize: 15, color: "#4a5568", lineHeight: 1.6 }}>
+              {confirmAction.type === "delete"
+                ? `Are you sure you want to permanently delete "${confirmAction.product.sku}"? This cannot be undone.`
+                : `Are you sure you want to ${confirmAction.product.active ? "deactivate" : "activate"} "${confirmAction.product.sku}"?`
+              }
+            </p>
+            {confirmAction.type === "delete" && (
+              <p style={{ margin: "0 0 24px", fontSize: 13, color: "#e53e3e", fontWeight: 600 }}>This action is permanent.</p>
+            )}
+            {confirmAction.type !== "delete" && <div style={{ marginBottom: 24 }} />}
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <button onClick={() => setConfirmAction(null)} style={btnSecondary}>Cancel</button>
+              <button
+                onClick={() => confirmAction.type === "delete" ? deleteProduct(confirmAction.product) : toggleActive(confirmAction.product)}
+                style={{ ...btnPrimary, background: confirmAction.type === "delete" ? "#e53e3e" : "linear-gradient(135deg, #0f2027, #203a43)" }}
+              >
+                {confirmAction.type === "delete" ? "Delete" : (confirmAction.product.active ? "Deactivate" : "Activate")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -568,6 +610,12 @@ const tdAdmin = { padding: "10px 12px" };
 const formCard = {
   background: "#fff", borderRadius: 12, padding: 24, marginBottom: 20,
   border: "2px solid #ecc94b", boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+};
+
+const menuItemStyle = {
+  display: "block", width: "100%", padding: "10px 16px", border: "none",
+  background: "none", textAlign: "left", fontSize: 13, fontWeight: 600,
+  color: "#203a43", cursor: "pointer", fontFamily: "inherit",
 };
 
 

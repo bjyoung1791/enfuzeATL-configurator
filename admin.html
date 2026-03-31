@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Enfuze Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f7f9fb; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+  <script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+
+// ── SUPABASE CONNECTION ──────────────────────────────────────
+// Replace these with your Supabase project values
+const SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co";
+const SUPABASE_ANON_KEY = "YOUR_ANON_KEY";
+
+const sb = (endpoint, options = {}) =>
+  fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: options.prefer || "return=representation",
+      ...(options.headers || {}),
+    },
+    ...options,
+  }).then((r) => r.json());
+
+// ── MAIN APP ─────────────────────────────────────────────────
+function AdminPanel() {
+  const [authenticated, setAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState("products");
+  const [products, setProducts] = useState([]);
+  const [installRates, setInstallRates] = useState([]);
+  const [installConfig, setInstallConfig] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg, type = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const handleLogin = async () => {
+    setError("");
+    try {
+      const data = await sb("admin_settings?setting_key=eq.admin_password&select=setting_value");
+      if (data?.[0]?.setting_value === passwordInput) {
+        setAuthenticated(true);
+      } else {
+        setError("Incorrect password");
+      }
+    } catch {
+      setError("Could not connect to Supabase. Check your URL and key.");
+    }
+  };
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [p, r, c] = await Promise.all([
+        sb("products?order=sort_order,sku"),
+        sb("install_rates?order=rate_group,sort_order"),
+        sb("install_config?order=config_key"),
+      ]);
+      setProducts(p || []);
+      setInstallRates(r || []);
+      setInstallConfig(c || []);
+    } catch (e) {
+      showToast("Failed to load data", "error");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (authenticated) fetchAll();
+  }, [authenticated, fetchAll]);
+
+  if (!authenticated) {
+    return (
+      <Shell>
+        <div style={{ maxWidth: 400, margin: "120px auto", textAlign: "center" }}>
+          <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16, marginBottom: 32 }}>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Enfuze Admin</h1>
+          </div>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 32, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #e2e8f0" }}>
+            <p style={{ margin: "0 0 20px", fontSize: 14, color: "#6b7c93" }}>Enter admin password to continue</p>
+            <input
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+              placeholder="Password"
+              style={inputStyle}
+            />
+            {error && <p style={{ color: "#e53e3e", fontSize: 13, margin: "8px 0 0" }}>{error}</p>}
+            <button onClick={handleLogin} style={{ ...btnPrimary, width: "100%", marginTop: 16 }}>Sign In</button>
+          </div>
+        </div>
+      </Shell>
+    );
+  }
+
+  const tabs = [
+    { key: "products", label: "Products" },
+    { key: "rates", label: "Install Rates" },
+    { key: "config", label: "Zone Logic" },
+    { key: "settings", label: "Settings" },
+  ];
+
+  return (
+    <Shell>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+          <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "12px 28px", borderRadius: 12 }}>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#fff" }}>Enfuze Admin</h1>
+          </div>
+          <button onClick={() => setAuthenticated(false)} style={{ ...btnSecondary, fontSize: 13 }}>Log Out</button>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 24, borderBottom: "2px solid #e2e8f0", paddingBottom: 0 }}>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setActiveTab(t.key)}
+              style={{
+                padding: "10px 20px", border: "none", background: activeTab === t.key ? "#203a43" : "transparent",
+                color: activeTab === t.key ? "#fff" : "#6b7c93", fontSize: 14, fontWeight: 600,
+                borderRadius: "8px 8px 0 0", cursor: "pointer", fontFamily: "inherit",
+              }}
+            >{t.label}</button>
+          ))}
+        </div>
+
+        {loading ? (
+          <p style={{ textAlign: "center", color: "#6b7c93", padding: 40 }}>Loading...</p>
+        ) : (
+          <>
+            {activeTab === "products" && <ProductsTab products={products} onRefresh={fetchAll} showToast={showToast} />}
+            {activeTab === "rates" && <RatesTab rates={installRates} onRefresh={fetchAll} showToast={showToast} />}
+            {activeTab === "config" && <ConfigTab config={installConfig} onRefresh={fetchAll} showToast={showToast} />}
+            {activeTab === "settings" && <SettingsTab showToast={showToast} />}
+          </>
+        )}
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, padding: "12px 24px", borderRadius: 10,
+          background: toast.type === "error" ? "#e53e3e" : "#203a43", color: "#fff",
+          fontSize: 14, fontWeight: 600, boxShadow: "0 4px 12px rgba(0,0,0,0.15)", zIndex: 9999,
+        }}>{toast.msg}</div>
+      )}
+    </Shell>
+  );
+}
+
+// ── PRODUCTS TAB ─────────────────────────────────────────────
+function ProductsTab({ products, onRefresh, showToast }) {
+  const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({});
+
+  const categories = ["Audio Streamers", "Audio Zone Amplifiers", "Power Supplies", "Speakers", "Subwoofers", "Wire & Cable", "Insect Control"];
+
+  const startAdd = () => {
+    setForm({ sku: "", name: "", description: "", category: "Speakers", unit_price: "", sort_order: 0, active: true });
+    setAdding(true);
+    setEditing(null);
+  };
+
+  const startEdit = (p) => {
+    setForm({ ...p });
+    setEditing(p.id);
+    setAdding(false);
+  };
+
+  const cancel = () => { setEditing(null); setAdding(false); setForm({}); };
+
+  const saveNew = async () => {
+    if (!form.sku || !form.name || !form.unit_price) return showToast("SKU, name, and price are required", "error");
+    await sb("products", { method: "POST", body: JSON.stringify({ ...form, unit_price: parseFloat(form.unit_price) }) });
+    showToast("Product added");
+    cancel();
+    onRefresh();
+  };
+
+  const saveEdit = async () => {
+    const { id, created_at, updated_at, ...rest } = form;
+    await sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ ...rest, unit_price: parseFloat(rest.unit_price) }) });
+    showToast("Product updated");
+    cancel();
+    onRefresh();
+  };
+
+  const toggleActive = async (p) => {
+    await sb(`products?id=eq.${p.id}`, { method: "PATCH", body: JSON.stringify({ active: !p.active }) });
+    showToast(p.active ? "Product deactivated" : "Product activated");
+    onRefresh();
+  };
+
+  const deleteProduct = async (p) => {
+    if (!confirm(`Delete ${p.sku}? This cannot be undone.`)) return;
+    await sb(`products?id=eq.${p.id}`, { method: "DELETE" });
+    showToast("Product deleted");
+    onRefresh();
+  };
+
+  const grouped = categories.map((cat) => ({ cat, items: products.filter((p) => p.category === cat) })).filter((g) => g.items.length > 0);
+  const ungrouped = products.filter((p) => !categories.includes(p.category));
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#0f2027" }}>Products ({products.length})</h2>
+        <button onClick={startAdd} style={btnPrimary}>+ Add Product</button>
+      </div>
+
+      {/* Add form */}
+      {adding && (
+        <div style={formCard}>
+          <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>New Product</h3>
+          <ProductForm form={form} setForm={setForm} categories={categories} />
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={saveNew} style={btnPrimary}>Save</button>
+            <button onClick={cancel} style={btnSecondary}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Product list by category */}
+      {grouped.map((g) => (
+        <div key={g.cat} style={{ marginBottom: 24 }}>
+          <h3 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 700, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>{g.cat}</h3>
+          <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#f7f9fb" }}>
+                  <th style={thAdmin}>SKU</th>
+                  <th style={thAdmin}>Name</th>
+                  <th style={{ ...thAdmin, textAlign: "right" }}>Price</th>
+                  <th style={{ ...thAdmin, textAlign: "center" }}>Active</th>
+                  <th style={{ ...thAdmin, textAlign: "right", width: 160 }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.items.map((p) =>
+                  editing === p.id ? (
+                    <tr key={p.id} style={{ background: "#fffbeb" }}>
+                      <td colSpan={5} style={{ padding: 16 }}>
+                        <ProductForm form={form} setForm={setForm} categories={categories} />
+                        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                          <button onClick={saveEdit} style={btnPrimary}>Save</button>
+                          <button onClick={cancel} style={btnSecondary}>Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr key={p.id} style={{ borderTop: "1px solid #edf2f7", opacity: p.active ? 1 : 0.5 }}>
+                      <td style={{ ...tdAdmin, fontFamily: "monospace", fontSize: 12 }}>{p.sku}</td>
+                      <td style={tdAdmin}>{p.name}</td>
+                      <td style={{ ...tdAdmin, textAlign: "right" }}>${parseFloat(p.unit_price).toLocaleString()}</td>
+                      <td style={{ ...tdAdmin, textAlign: "center" }}>
+                        <span style={{ color: p.active ? "#38a169" : "#e53e3e", fontWeight: 600 }}>{p.active ? "Yes" : "No"}</span>
+                      </td>
+                      <td style={{ ...tdAdmin, textAlign: "right" }}>
+                        <button onClick={() => startEdit(p)} style={btnSmall}>Edit</button>
+                        <button onClick={() => toggleActive(p)} style={{ ...btnSmall, marginLeft: 4 }}>{p.active ? "Deactivate" : "Activate"}</button>
+                        <button onClick={() => deleteProduct(p)} style={{ ...btnSmall, marginLeft: 4, color: "#e53e3e" }}>Delete</button>
+                      </td>
+                    </tr>
+                  )
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+      {ungrouped.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <h3 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 700, color: "#203a43" }}>Other</h3>
+          {ungrouped.map((p) => (
+            <div key={p.id} style={{ padding: 8, fontSize: 13 }}>{p.sku} — {p.name} — ${parseFloat(p.unit_price).toLocaleString()}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProductForm({ form, setForm, categories }) {
+  const u = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div>
+        <SmallLabel>SKU</SmallLabel>
+        <input value={form.sku || ""} onChange={u("sku")} style={inputStyle} />
+      </div>
+      <div>
+        <SmallLabel>Category</SmallLabel>
+        <select value={form.category || ""} onChange={u("category")} style={inputStyle}>
+          {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      <div style={{ gridColumn: "1 / -1" }}>
+        <SmallLabel>Name</SmallLabel>
+        <input value={form.name || ""} onChange={u("name")} style={inputStyle} />
+      </div>
+      <div style={{ gridColumn: "1 / -1" }}>
+        <SmallLabel>Description</SmallLabel>
+        <input value={form.description || ""} onChange={u("description")} style={inputStyle} />
+      </div>
+      <div>
+        <SmallLabel>Unit Price ($)</SmallLabel>
+        <input type="number" step="0.01" value={form.unit_price || ""} onChange={u("unit_price")} style={inputStyle} />
+      </div>
+      <div>
+        <SmallLabel>Sort Order</SmallLabel>
+        <input type="number" value={form.sort_order || 0} onChange={u("sort_order")} style={inputStyle} />
+      </div>
+    </div>
+  );
+}
+
+// ── INSTALL RATES TAB ────────────────────────────────────────
+function RatesTab({ rates, onRefresh, showToast }) {
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState({});
+
+  const startEdit = (r) => { setForm({ ...r }); setEditId(r.id); };
+  const cancel = () => { setEditId(null); setForm({}); };
+
+  const save = async () => {
+    const { id, created_at, updated_at, ...rest } = form;
+    await sb(`install_rates?id=eq.${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...rest, unit_rate: parseFloat(rest.unit_rate), markup_multiplier: parseFloat(rest.markup_multiplier) }),
+    });
+    showToast("Rate updated");
+    cancel();
+    onRefresh();
+  };
+
+  const groups = [
+    { key: "standard", label: "Standard Rates (Audio, Both, or Audio+Insect)" },
+    { key: "insect_only", label: "Insect Control Only Rates" },
+  ];
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: "#0f2027" }}>Installation Rates</h2>
+      <p style={{ margin: "0 0 24px", fontSize: 13, color: "#6b7c93" }}>
+        <strong>Unit Rate</strong> is your cost. <strong>Markup Multiplier</strong> converts cost to customer price (e.g., 2.0 = double).
+        Customer sees: Unit Rate × Markup.
+      </p>
+
+      {groups.map((g) => {
+        const items = rates.filter((r) => r.rate_group === g.key);
+        return (
+          <div key={g.key} style={{ marginBottom: 24 }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 700, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>{g.label}</h3>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#f7f9fb" }}>
+                    <th style={thAdmin}>Description</th>
+                    <th style={{ ...thAdmin, textAlign: "right" }}>Cost (Unit Rate)</th>
+                    <th style={{ ...thAdmin, textAlign: "center" }}>Markup</th>
+                    <th style={{ ...thAdmin, textAlign: "right" }}>Customer Price</th>
+                    <th style={{ ...thAdmin, textAlign: "right", width: 100 }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((r) =>
+                    editId === r.id ? (
+                      <tr key={r.id} style={{ background: "#fffbeb" }}>
+                        <td style={tdAdmin}>
+                          <input value={form.description || ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ ...inputStyle, fontSize: 13 }} />
+                        </td>
+                        <td style={tdAdmin}>
+                          <input type="number" step="0.01" value={form.unit_rate || ""} onChange={(e) => setForm((f) => ({ ...f, unit_rate: e.target.value }))} style={{ ...inputStyle, fontSize: 13, textAlign: "right", width: 100 }} />
+                        </td>
+                        <td style={tdAdmin}>
+                          <input type="number" step="0.1" value={form.markup_multiplier || ""} onChange={(e) => setForm((f) => ({ ...f, markup_multiplier: e.target.value }))} style={{ ...inputStyle, fontSize: 13, textAlign: "center", width: 70 }} />
+                        </td>
+                        <td style={{ ...tdAdmin, textAlign: "right", fontWeight: 600, color: "#203a43" }}>
+                          ${(parseFloat(form.unit_rate || 0) * parseFloat(form.markup_multiplier || 1)).toLocaleString()}
+                        </td>
+                        <td style={{ ...tdAdmin, textAlign: "right" }}>
+                          <button onClick={save} style={btnSmall}>Save</button>
+                          <button onClick={cancel} style={{ ...btnSmall, marginLeft: 4 }}>Cancel</button>
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={r.id} style={{ borderTop: "1px solid #edf2f7" }}>
+                        <td style={tdAdmin}>{r.description}</td>
+                        <td style={{ ...tdAdmin, textAlign: "right" }}>${parseFloat(r.unit_rate).toLocaleString()}</td>
+                        <td style={{ ...tdAdmin, textAlign: "center" }}>{r.markup_multiplier}×</td>
+                        <td style={{ ...tdAdmin, textAlign: "right", fontWeight: 600, color: "#203a43" }}>
+                          ${(parseFloat(r.unit_rate) * parseFloat(r.markup_multiplier)).toLocaleString()}
+                        </td>
+                        <td style={{ ...tdAdmin, textAlign: "right" }}>
+                          <button onClick={() => startEdit(r)} style={btnSmall}>Edit</button>
+                        </td>
+                      </tr>
+                    )
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── INSTALL CONFIG TAB ───────────────────────────────────────
+function ConfigTab({ config, onRefresh, showToast }) {
+  const [editKey, setEditKey] = useState(null);
+  const [editVal, setEditVal] = useState("");
+
+  const startEdit = (c) => { setEditKey(c.config_key); setEditVal(c.config_value); };
+  const cancel = () => { setEditKey(null); setEditVal(""); };
+
+  const save = async (c) => {
+    await sb(`install_config?id=eq.${c.id}`, { method: "PATCH", body: JSON.stringify({ config_value: editVal }) });
+    showToast("Config updated");
+    cancel();
+    onRefresh();
+  };
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: "#0f2027" }}>Zone Logic Rules</h2>
+      <p style={{ margin: "0 0 24px", fontSize: 13, color: "#6b7c93" }}>
+        These control the configurator's validation and auto-selection logic.
+      </p>
+      <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "#f7f9fb" }}>
+              <th style={thAdmin}>Setting</th>
+              <th style={thAdmin}>Description</th>
+              <th style={{ ...thAdmin, textAlign: "center" }}>Value</th>
+              <th style={{ ...thAdmin, textAlign: "right", width: 100 }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {config.map((c) => (
+              <tr key={c.id} style={{ borderTop: "1px solid #edf2f7" }}>
+                <td style={{ ...tdAdmin, fontWeight: 600 }}>{c.label}</td>
+                <td style={{ ...tdAdmin, color: "#6b7c93" }}>{c.description}</td>
+                <td style={{ ...tdAdmin, textAlign: "center" }}>
+                  {editKey === c.config_key ? (
+                    <input value={editVal} onChange={(e) => setEditVal(e.target.value)} style={{ ...inputStyle, fontSize: 13, textAlign: "center", width: 120 }} />
+                  ) : (
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#203a43" }}>{c.config_value}</span>
+                  )}
+                </td>
+                <td style={{ ...tdAdmin, textAlign: "right" }}>
+                  {editKey === c.config_key ? (
+                    <>
+                      <button onClick={() => save(c)} style={btnSmall}>Save</button>
+                      <button onClick={cancel} style={{ ...btnSmall, marginLeft: 4 }}>Cancel</button>
+                    </>
+                  ) : (
+                    <button onClick={() => startEdit(c)} style={btnSmall}>Edit</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── SETTINGS TAB ─────────────────────────────────────────────
+function SettingsTab({ showToast }) {
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  const changePassword = async () => {
+    if (!newPassword || newPassword.length < 6) return showToast("Password must be at least 6 characters", "error");
+    if (newPassword !== confirmPassword) return showToast("Passwords don't match", "error");
+    await sb("admin_settings?setting_key=eq.admin_password", { method: "PATCH", body: JSON.stringify({ setting_value: newPassword }) });
+    showToast("Password updated");
+    setNewPassword("");
+    setConfirmPassword("");
+  };
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 24px", fontSize: 18, fontWeight: 700, color: "#0f2027" }}>Settings</h2>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 400 }}>
+        <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>Change Admin Password</h3>
+        <div style={{ marginBottom: 12 }}>
+          <SmallLabel>New Password</SmallLabel>
+          <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <SmallLabel>Confirm Password</SmallLabel>
+          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} style={inputStyle} />
+        </div>
+        <button onClick={changePassword} style={btnPrimary}>Update Password</button>
+      </div>
+    </div>
+  );
+}
+
+// ── SHARED COMPONENTS ────────────────────────────────────────
+function Shell({ children }) {
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", minHeight: "100vh", color: "#1a1a2e", background: "#f7f9fb" }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      {children}
+    </div>
+  );
+}
+
+function SmallLabel({ children }) {
+  return <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4a5568", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>{children}</label>;
+}
+
+// ── STYLES ───────────────────────────────────────────────────
+const inputStyle = {
+  width: "100%", padding: "10px 12px", fontSize: 14, border: "2px solid #dce3ed",
+  borderRadius: 8, background: "#fff", color: "#1a1a2e", fontFamily: "inherit",
+  fontWeight: 500, outline: "none", boxSizing: "border-box",
+};
+
+const btnPrimary = {
+  background: "linear-gradient(135deg, #0f2027, #203a43)", color: "#fff", border: "none",
+  padding: "10px 20px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+};
+
+const btnSecondary = {
+  background: "#fff", color: "#203a43", border: "2px solid #dce3ed",
+  padding: "10px 20px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+};
+
+const btnSmall = {
+  background: "none", border: "1px solid #dce3ed", padding: "4px 10px", borderRadius: 6,
+  fontSize: 12, fontWeight: 600, color: "#203a43", cursor: "pointer", fontFamily: "inherit",
+};
+
+const thAdmin = { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#4a5568", textTransform: "uppercase", letterSpacing: 0.5 };
+const tdAdmin = { padding: "10px 12px" };
+
+const formCard = {
+  background: "#fff", borderRadius: 12, padding: 24, marginBottom: 20,
+  border: "2px solid #ecc94b", boxShadow: "0 2px 12px rgba(0,0,0,0.06)",
+};
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<AdminPanel />);
+
+  </script>
+</body>
+</html>

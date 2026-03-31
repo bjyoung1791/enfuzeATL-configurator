@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Enfuze Atlanta — Product Configurator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f7f9fb; }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script type="text/babel">
+const { useState, useCallback, useRef, useEffect } = React;
+
+
+// ── SUPABASE CONNECTION ──────────────────────────────────────
+// Replace these with your Supabase project values
+const SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co";
+const SUPABASE_ANON_KEY = "YOUR_ANON_KEY";
+
+const sb = (endpoint) =>
+  fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+  }).then((r) => r.json());
+
+// Fallback defaults in case Supabase hasn't loaded yet
+const DEFAULT_PRODUCTS = {};
+const DEFAULT_INSTALL = { standard: {}, insect_only: {} };
+const DEFAULT_CONFIG = {
+  max_speakers_per_zone: 12,
+  max_subs_per_zone: 2,
+  max_repellers_per_zone: 6,
+  amp_upgrade_threshold: 8,
+  standard_amp_sku: "FA-12L-SNS",
+  plus_amp_sku: "FA-PLUS-12L-SNS",
+};
+
+function createAudioZone(id) {
+  return { id, wallSpeakers: 0, wallColor: "black", landscapeSpeakers: 0, subs: 0 };
+}
+
+function createInsectZone(id) {
+  return { id, repellers: 0 };
+}
+
+function EnfuzeConfigurator() {
+  // Data from Supabase
+  const [PRODUCTS, setProducts] = useState(DEFAULT_PRODUCTS);
+  const [INSTALL_RATES, setInstallRates] = useState(DEFAULT_INSTALL);
+  const [CONFIG, setConfig] = useState(DEFAULT_CONFIG);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [productsRaw, ratesRaw, configRaw] = await Promise.all([
+          sb("products?active=eq.true&order=sort_order,sku"),
+          sb("install_rates?order=rate_group,sort_order"),
+          sb("install_config?order=config_key"),
+        ]);
+
+        // Build products lookup { sku: { name, price, category } }
+        const prodMap = {};
+        (productsRaw || []).forEach((p) => {
+          prodMap[p.sku] = { name: p.name, price: parseFloat(p.unit_price), category: p.category };
+        });
+        setProducts(prodMap);
+
+        // Build install rates { standard: { "Truck Fee": { rate, markup }, ... }, insect_only: { ... } }
+        const rateMap = { standard: {}, insect_only: {} };
+        (ratesRaw || []).forEach((r) => {
+          const price = parseFloat(r.unit_rate) * parseFloat(r.markup_multiplier);
+          if (!rateMap[r.rate_group]) rateMap[r.rate_group] = {};
+          rateMap[r.rate_group][r.description] = { cost: parseFloat(r.unit_rate), markup: parseFloat(r.markup_multiplier), price };
+        });
+        setInstallRates(rateMap);
+
+        // Build config lookup { key: value }
+        const cfgMap = {};
+        (configRaw || []).forEach((c) => {
+          cfgMap[c.config_key] = isNaN(c.config_value) ? c.config_value : parseInt(c.config_value);
+        });
+        setConfig((prev) => ({ ...prev, ...cfgMap }));
+
+        setDataLoaded(true);
+      } catch (e) {
+        console.error("Failed to load from Supabase:", e);
+        setLoadError(true);
+      }
+    };
+    load();
+  }, []);
+  const [serviceType, setServiceType] = useState("");
+  const [audioZones, setAudioZones] = useState([]);
+  const [insectZones, setInsectZones] = useState([]);
+  const [extraCable10, setExtraCable10] = useState(0);
+  const [extraCable24, setExtraCable24] = useState(0);
+  const [cableSpk16Bk, setCableSpk16Bk] = useState(0);
+  const [cableSpk16Wh, setCableSpk16Wh] = useState(0);
+  const [cableSub12, setCableSub12] = useState(0);
+  const [cablePwr12, setCablePwr12] = useState(0);
+  const [warning, setWarning] = useState(null);
+  const [projectName, setProjectName] = useState("");
+  const [projectDate, setProjectDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [laborView, setLaborView] = useState("total");
+  const printRef = useRef(null);
+
+  const showAudio = serviceType === "audio" || serviceType === "both";
+  const showInsect = serviceType === "insect" || serviceType === "both";
+
+  const resetAudioCables = () => { setCableSpk16Bk(0); setCableSpk16Wh(0); setCableSub12(0); setCablePwr12(0); };
+  const handleServiceChange = (val) => {
+    setServiceType(val);
+    if (val === "audio") { setAudioZones([createAudioZone(1)]); setInsectZones([]); setExtraCable10(0); setExtraCable24(0); }
+    else if (val === "insect") { setAudioZones([]); setInsectZones([createInsectZone(1)]); resetAudioCables(); }
+    else if (val === "both") { setAudioZones([createAudioZone(1)]); setInsectZones([createInsectZone(1)]); }
+    else { setAudioZones([]); setInsectZones([]); resetAudioCables(); setExtraCable10(0); setExtraCable24(0); }
+  };
+
+  const setAudioZoneCount = (count) => {
+    const c = Math.max(1, Math.min(10, count));
+    setAudioZones((prev) => {
+      if (c > prev.length) {
+        const newZones = [...prev];
+        for (let i = prev.length; i < c; i++) newZones.push(createAudioZone(i + 1));
+        return newZones;
+      }
+      return prev.slice(0, c);
+    });
+  };
+
+  const setInsectZoneCount = (count) => {
+    const c = Math.max(1, Math.min(10, count));
+    setInsectZones((prev) => {
+      if (c > prev.length) {
+        const newZones = [...prev];
+        for (let i = prev.length; i < c; i++) newZones.push(createInsectZone(i + 1));
+        return newZones;
+      }
+      return prev.slice(0, c);
+    });
+  };
+
+  const updateAudioZone = (index, field, value) => {
+    setAudioZones((prev) => {
+      const updated = [...prev];
+      const zone = { ...updated[index] };
+      const numVal = typeof value === "string" && field !== "wallColor" ? Math.max(0, parseInt(value) || 0) : value;
+
+      if (field === "wallSpeakers" || field === "landscapeSpeakers") {
+        const otherField = field === "wallSpeakers" ? "landscapeSpeakers" : "wallSpeakers";
+        const totalSpeakers = numVal + zone[otherField];
+        if (totalSpeakers > CONFIG.max_speakers_per_zone) {
+          setWarning({ title: "Speaker Limit Exceeded", message: `Zone ${index + 1}: Total speakers (${totalSpeakers}) exceeds the maximum of ${CONFIG.max_speakers_per_zone} per zone. To add more speakers, please add another audio zone.` });
+          return prev;
+        }
+      }
+      if (field === "subs" && numVal > CONFIG.max_subs_per_zone) {
+        setWarning({ title: "Subwoofer Limit Exceeded", message: `Zone ${index + 1}: Subwoofers (${numVal}) exceeds the maximum of ${CONFIG.max_subs_per_zone} per zone. To add more subs, please add another audio zone.` });
+        return prev;
+      }
+      zone[field] = numVal;
+      updated[index] = zone;
+      return updated;
+    });
+  };
+
+  const updateInsectZone = (index, field, value) => {
+    setInsectZones((prev) => {
+      const updated = [...prev];
+      const zone = { ...updated[index] };
+      const numVal = Math.max(0, parseInt(value) || 0);
+      if (field === "repellers" && numVal > CONFIG.max_repellers_per_zone) {
+        setWarning({ title: "Repeller Limit Exceeded", message: `Zone ${index + 1}: Repellers (${numVal}) exceeds the maximum of ${CONFIG.max_repellers_per_zone} per zone. To add more repellers, please add another insect control zone.` });
+        return prev;
+      }
+      zone[field] = numVal;
+      updated[index] = zone;
+      return updated;
+    });
+  };
+
+  // Calculate line items
+  const calculateQuote = useCallback(() => {
+    const itemMap = new Map();
+    let totalSpeakerSubPoints = 0;
+    let totalAudioZones = 0;
+    let totalRepellers = 0;
+
+    const addItem = (sku, qty) => {
+      if (qty <= 0) return;
+      if (itemMap.has(sku)) {
+        itemMap.set(sku, itemMap.get(sku) + qty);
+      } else {
+        itemMap.set(sku, qty);
+      }
+    };
+
+    // Audio zones
+    audioZones.forEach((zone) => {
+      const totalSpeakers = zone.wallSpeakers + zone.landscapeSpeakers;
+      if (totalSpeakers === 0 && zone.subs === 0) return;
+
+      totalAudioZones++;
+      const ampSku = totalSpeakers <= CONFIG.amp_upgrade_threshold ? CONFIG.standard_amp_sku : CONFIG.plus_amp_sku;
+
+      addItem("SONOS-PORT", 1);
+      addItem(ampSku, 1);
+      addItem("PS-120-12VAC-300", 1);
+
+      if (zone.wallSpeakers > 0) {
+        const spkSku = zone.wallColor === "black" ? "SPK-5-870-BK" : "SPK-5-870-WH";
+        addItem(spkSku, zone.wallSpeakers);
+      }
+      addItem("SPK-BLT5-870-BR", zone.landscapeSpeakers);
+      addItem("SPK-SUB10-BR", zone.subs);
+      totalSpeakerSubPoints += zone.wallSpeakers + zone.landscapeSpeakers + zone.subs;
+    });
+
+    // Insect zones
+    insectZones.forEach((zone) => {
+      if (zone.repellers === 0) return;
+      addItem("THERM-IS-HUB2", 1);
+      addItem("THERM-IS-REP1", zone.repellers);
+      addItem("THERM-LIV-R180-1", zone.repellers);
+      totalRepellers += zone.repellers;
+    });
+
+    // Extension cables (insect)
+    addItem("THERM-IS-CC10", extraCable10);
+    addItem("THERM-IS-CC24", extraCable24);
+
+    // Audio cables
+    addItem("CBL-SPK-16-2-BK-500", cableSpk16Bk);
+    addItem("CBL-SPK-16-2-WH-500", cableSpk16Wh);
+    addItem("CBL-SPK-12-2-BK-500", cableSub12);
+    addItem("CBL-PWR-12-2-BK-500", cablePwr12);
+
+    const lineItems = [];
+    itemMap.forEach((qty, sku) => {
+      lineItems.push({ sku, qty, price: PRODUCTS[sku].price });
+    });
+
+    // Installation
+    const installItems = [];
+    const hasAnyItems = lineItems.length > 0;
+    const insectOnly = serviceType === "insect";
+    const rateGroup = insectOnly ? "insect_only" : "standard";
+    const rates = INSTALL_RATES[rateGroup] || {};
+
+    // Helper to get the customer price for a rate description
+    const getRate = (desc) => (rates[desc] ? rates[desc].price : 0);
+
+    if (hasAnyItems) {
+      const truckRate = getRate("Truck Fee");
+      const siteRate = getRate("Site Design & Coordination");
+      if (truckRate) installItems.push({ desc: "Truck Fee", qty: 1, rate: truckRate, total: truckRate });
+      if (siteRate) installItems.push({ desc: "Site Design & Coordination", qty: 1, rate: siteRate, total: siteRate });
+    }
+    if (!insectOnly && totalSpeakerSubPoints > 0) {
+      const spkRate = getRate("Speaker/Sub Audio Point Fee");
+      if (spkRate) installItems.push({ desc: "Speaker/Sub Audio Point Fee", qty: totalSpeakerSubPoints, rate: spkRate, total: totalSpeakerSubPoints * spkRate });
+    }
+    if (!insectOnly && totalAudioZones > 0) {
+      const ampRate = getRate("Amp & Transformer Install");
+      if (ampRate) installItems.push({ desc: "Amp & Transformer Install", qty: totalAudioZones, rate: ampRate, total: totalAudioZones * ampRate });
+    }
+    if (totalRepellers > 0) {
+      const thermRate = getRate("Thermacell Point Fee");
+      if (thermRate) installItems.push({ desc: "Thermacell Point Fee", qty: totalRepellers, rate: thermRate, total: totalRepellers * thermRate });
+    }
+
+    const equipmentTotal = lineItems.reduce((sum, item) => sum + item.qty * item.price, 0);
+    const installTotal = installItems.reduce((sum, item) => sum + item.total, 0);
+
+    return { lineItems, installItems, equipmentTotal, installTotal, grandTotal: equipmentTotal + installTotal };
+  }, [audioZones, insectZones, extraCable10, extraCable24, cableSpk16Bk, cableSpk16Wh, cableSub12, cablePwr12, serviceType, PRODUCTS, INSTALL_RATES, CONFIG]);
+
+  const quote = calculateQuote();
+  const hasConfig = quote.lineItems.length > 0;
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return "";
+    const [y, m, d] = dateStr.split("-");
+    return `${m}/${d}/${y}`;
+  };
+
+  const exportPDF = () => {
+    const el = printRef.current;
+    if (!el) return;
+    const style = document.createElement("style");
+    style.textContent = `
+      @media print {
+        body * { visibility: hidden; }
+        #print-area, #print-area * { visibility: visible; }
+        #print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 24px; }
+        .no-print { display: none !important; }
+        @page { margin: 0.5in; }
+      }
+    `;
+    document.head.appendChild(style);
+    window.print();
+    setTimeout(() => document.head.removeChild(style), 500);
+  };
+
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const header = [
+      ["Enfuze Atlanta — Product Configurator"],
+      ["Project:", projectName || "(No project name)"],
+      ["Date:", formatDate(projectDate)],
+      [],
+      ["EQUIPMENT"],
+      ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"],
+    ];
+    const equipRows = quote.lineItems.map((item) => [
+      item.sku, PRODUCTS[item.sku].name, item.qty, item.price, item.qty * item.price,
+    ]);
+    const installSection = laborView === "itemized"
+      ? [[], ["INSTALLATION"], ["Description", "Qty", "Rate", "Total"], ...quote.installItems.map((item) => [item.desc, item.qty, item.rate, item.total])]
+      : [[], ["INSTALLATION"], ["Installation Total", "", "", quote.installTotal]];
+    const totals = [
+      [], ["", "", "", "Equipment Subtotal", quote.equipmentTotal],
+      ["", "", "", "Installation Subtotal", quote.installTotal],
+      ["", "", "", "GRAND TOTAL", quote.grandTotal],
+    ];
+    const data = [...header, ...equipRows, ...installSection, ...totals];
+    const ws = XLSX.utils.aoa_to_sheet(data);
+
+    // Column widths
+    ws["!cols"] = [{ wch: 24 }, { wch: 44 }, { wch: 6 }, { wch: 12 }, { wch: 14 }];
+
+    XLSX.utils.book_append_sheet(wb, ws, "Quote");
+    const fileName = projectName ? `${projectName.replace(/[^a-zA-Z0-9]/g, "_")}_Quote.xlsx` : "Enfuze_Quote.xlsx";
+    XLSX.writeFile(wb, fileName);
+  };
+
+  if (!dataLoaded) {
+    return (
+      <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", maxWidth: 960, margin: "0 auto", padding: "24px 16px", textAlign: "center" }}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+        <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16, marginTop: 80, marginBottom: 24 }}>
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, color: "#fff" }}>Enfuze Atlanta</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 14, color: "#8ec8e8", fontWeight: 500, letterSpacing: 1.5, textTransform: "uppercase" }}>Product Configurator</p>
+        </div>
+        {loadError ? (
+          <p style={{ color: "#e53e3e", fontSize: 15 }}>Failed to load product data. Please check your Supabase connection and refresh.</p>
+        ) : (
+          <p style={{ color: "#6b7c93", fontSize: 15 }}>Loading product data...</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div id="print-area" ref={printRef} style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", maxWidth: 960, margin: "0 auto", padding: "24px 16px", color: "#1a1a2e", background: "transparent" }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ textAlign: "center", marginBottom: 32 }}>
+        <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16 }}>
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, color: "#fff", letterSpacing: "-0.5px" }}>Enfuze Atlanta</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 14, color: "#8ec8e8", fontWeight: 500, letterSpacing: 1.5, textTransform: "uppercase" }}>Product Configurator</p>
+        </div>
+      </div>
+
+      {/* Project Info */}
+      <Card title="Project Information">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div>
+            <Label>Project Name</Label>
+            <input
+              type="text"
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              placeholder="e.g. Smith Residence"
+              style={{ ...selectStyle, cursor: "text" }}
+            />
+          </div>
+          <div>
+            <Label>Date</Label>
+            <input
+              type="date"
+              value={projectDate}
+              onChange={(e) => setProjectDate(e.target.value)}
+              style={{ ...selectStyle, cursor: "text" }}
+            />
+          </div>
+        </div>
+      </Card>
+
+      {/* Service Type Selection */}
+      <Card title="What service do you need?">
+        <select value={serviceType} onChange={(e) => handleServiceChange(e.target.value)} style={selectStyle}>
+          <option value="">— Select a service —</option>
+          <option value="audio">Audio</option>
+          <option value="insect">Insect Control</option>
+          <option value="both">Both</option>
+        </select>
+      </Card>
+
+      {/* Audio Configuration */}
+      {showAudio && (
+        <Card title="Audio Configuration">
+          <div style={{ marginBottom: 20 }}>
+            <Label>Number of Audio Zones</Label>
+            <NumberInput value={audioZones.length} onChange={(v) => setAudioZoneCount(v)} min={1} max={10} />
+          </div>
+          {audioZones.map((zone, i) => (
+            <div key={zone.id} style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, marginBottom: 16, border: "1px solid #dce3ed" }}>
+              <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>
+                Audio Zone {i + 1}
+                <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93", marginLeft: 8 }}>
+                  ({(zone.wallSpeakers + zone.landscapeSpeakers) <= CONFIG.amp_upgrade_threshold ? "Standard Amp" : "Plus Amp"} • {zone.wallSpeakers + zone.landscapeSpeakers}/{CONFIG.max_speakers_per_zone} speakers)
+                </span>
+              </h3>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div>
+                  <Label>Wall/Soffit Speakers</Label>
+                  <NumberInput value={zone.wallSpeakers} onChange={(v) => updateAudioZone(i, "wallSpeakers", v)} min={0} max={CONFIG.max_speakers_per_zone} />
+                </div>
+                <div>
+                  <Label>Speaker Color</Label>
+                  <select value={zone.wallColor} onChange={(e) => updateAudioZone(i, "wallColor", e.target.value)} style={selectStyle}>
+                    <option value="black">Black</option>
+                    <option value="white">White</option>
+                  </select>
+                </div>
+                <div>
+                  <Label>Landscape Speakers</Label>
+                  <NumberInput value={zone.landscapeSpeakers} onChange={(v) => updateAudioZone(i, "landscapeSpeakers", v)} min={0} max={CONFIG.max_speakers_per_zone} />
+                </div>
+                <div>
+                  <Label>Subwoofers</Label>
+                  <NumberInput value={zone.subs} onChange={(v) => updateAudioZone(i, "subs", v)} min={0} max={CONFIG.max_subs_per_zone} />
+                </div>
+              </div>
+            </div>
+          ))}
+          <div style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, border: "1px solid #dce3ed" }}>
+            <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>Wire & Cable (Optional)</h3>
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: "#6b7c93" }}>500ft spools — select the quantity of spools needed for the job.</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div>
+                <Label>16/2 Speaker Cable (Black)</Label>
+                <NumberInput value={cableSpk16Bk} onChange={(v) => setCableSpk16Bk(Math.max(0, v))} min={0} max={50} />
+              </div>
+              <div>
+                <Label>16/2 Speaker Cable (White)</Label>
+                <NumberInput value={cableSpk16Wh} onChange={(v) => setCableSpk16Wh(Math.max(0, v))} min={0} max={50} />
+              </div>
+              <div>
+                <Label>12/2 Sub Cable (Black)</Label>
+                <NumberInput value={cableSub12} onChange={(v) => setCableSub12(Math.max(0, v))} min={0} max={50} />
+              </div>
+              <div>
+                <Label>12/2 Transformer Cable (Black)</Label>
+                <NumberInput value={cablePwr12} onChange={(v) => setCablePwr12(Math.max(0, v))} min={0} max={50} />
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Insect Control Configuration */}
+      {showInsect && (
+        <Card title="Insect Control Configuration">
+          <div style={{ marginBottom: 20 }}>
+            <Label>Number of Insect Control Zones</Label>
+            <NumberInput value={insectZones.length} onChange={(v) => setInsectZoneCount(v)} min={1} max={10} />
+          </div>
+          {insectZones.map((zone, i) => (
+            <div key={zone.id} style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, marginBottom: 16, border: "1px solid #dce3ed" }}>
+              <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>
+                Insect Zone {i + 1}
+                <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93", marginLeft: 8 }}>
+                  (1 Hub • {zone.repellers}/{CONFIG.max_repellers_per_zone} repellers)
+                </span>
+              </h3>
+              <div>
+                <Label>Repellers</Label>
+                <NumberInput value={zone.repellers} onChange={(v) => updateInsectZone(i, "repellers", v)} min={0} max={CONFIG.max_repellers_per_zone} />
+              </div>
+            </div>
+          ))}
+          <div style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, border: "1px solid #dce3ed" }}>
+            <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>Extension Cables (Optional)</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div>
+                <Label>Extra 10ft Cables</Label>
+                <NumberInput value={extraCable10} onChange={(v) => setExtraCable10(Math.max(0, v))} min={0} max={50} />
+              </div>
+              <div>
+                <Label>Extra 24ft Cables</Label>
+                <NumberInput value={extraCable24} onChange={(v) => setExtraCable24(Math.max(0, v))} min={0} max={50} />
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Quote Summary */}
+      {hasConfig && (
+        <Card title="Quote Summary">
+          {/* Project info on quote */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, paddingBottom: 16, borderBottom: "1px solid #e2e8f0" }}>
+            <div>
+              <p style={{ margin: 0, fontSize: 16, fontWeight: 600, color: "#1a1a2e" }}>{projectName || "Untitled Project"}</p>
+              <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7c93" }}>{formatDate(projectDate)}</p>
+            </div>
+            <div className="no-print" style={{ display: "flex", gap: 8 }}>
+              <button onClick={exportPDF} style={exportBtnStyle}>
+                <span style={{ marginRight: 6 }}>📄</span> PDF
+              </button>
+              <button onClick={exportExcel} style={{ ...exportBtnStyle, background: "linear-gradient(135deg, #0d7c3e, #15803d)" }}>
+                <span style={{ marginRight: 6 }}>📊</span> Excel
+              </button>
+            </div>
+          </div>
+          {/* Equipment */}
+          <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 600, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>Equipment</h3>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 24 }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid #203a43" }}>
+                  <th style={thStyle}>SKU</th>
+                  <th style={thStyle}>Description</th>
+                  <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
+                  <th style={{ ...thStyle, textAlign: "right" }}>Unit Price</th>
+                  <th style={{ ...thStyle, textAlign: "right" }}>Ext. Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {quote.lineItems.map((item, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                    <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#6b7c93" }}>{item.sku}</td>
+                    <td style={tdStyle}>{PRODUCTS[item.sku].name}</td>
+                    <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
+                    <td style={{ ...tdStyle, textAlign: "right" }}>${item.price.toLocaleString()}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${(item.qty * item.price).toLocaleString()}</td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop: "2px solid #203a43" }}>
+                  <td colSpan={4} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Equipment Subtotal</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.equipmentTotal.toLocaleString()}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Installation */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>Installation</h3>
+            <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#6b7c93" }}>
+              <span style={{ fontWeight: laborView === "itemized" ? 600 : 400, color: laborView === "itemized" ? "#203a43" : "#6b7c93" }}>Itemized</span>
+              <div
+                onClick={() => setLaborView(laborView === "itemized" ? "total" : "itemized")}
+                style={{ width: 44, height: 24, borderRadius: 12, background: laborView === "total" ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
+              >
+                <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: laborView === "total" ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+              </div>
+              <span style={{ fontWeight: laborView === "total" ? 600 : 400, color: laborView === "total" ? "#203a43" : "#6b7c93" }}>Total Only</span>
+            </div>
+          </div>
+
+          {laborView === "itemized" ? (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 24 }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid #203a43" }}>
+                  <th style={thStyle}>Description</th>
+                  <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
+                  <th style={{ ...thStyle, textAlign: "right" }}>Rate</th>
+                  <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {quote.installItems.map((item, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                    <td style={tdStyle}>{item.desc}</td>
+                    <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
+                    <td style={{ ...tdStyle, textAlign: "right" }}>${item.rate.toLocaleString()}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${item.total.toLocaleString()}</td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop: "2px solid #203a43" }}>
+                  <td colSpan={3} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Installation Subtotal</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.installTotal.toLocaleString()}</td>
+                </tr>
+              </tbody>
+            </table>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 12px", marginBottom: 24, borderTop: "2px solid #203a43", borderBottom: "2px solid #203a43" }}>
+              <span style={{ fontSize: 15, fontWeight: 700, color: "#203a43" }}>Installation Total</span>
+              <span style={{ fontSize: 18, fontWeight: 700, color: "#203a43" }}>${quote.installTotal.toLocaleString()}</span>
+            </div>
+          )}
+
+          {/* Grand Total */}
+          <div style={{ background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", borderRadius: 12, padding: 24, textAlign: "center" }}>
+            <p style={{ margin: 0, fontSize: 13, color: "#8ec8e8", textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 500 }}>Grand Total</p>
+            <p style={{ margin: "8px 0 0", fontSize: 36, fontWeight: 700, color: "#fff" }}>${quote.grandTotal.toLocaleString()}</p>
+          </div>
+        </Card>
+      )}
+
+      {/* Warning Modal */}
+      {warning && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(15,32,39,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }} onClick={() => setWarning(null)}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 32, maxWidth: 440, width: "100%", boxShadow: "0 24px 48px rgba(0,0,0,0.2)", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#fff3cd", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 28 }}>⚠️</div>
+            <h3 style={{ margin: "0 0 12px", fontSize: 20, fontWeight: 700, color: "#1a1a2e" }}>{warning.title}</h3>
+            <p style={{ margin: "0 0 24px", fontSize: 15, color: "#4a5568", lineHeight: 1.6 }}>{warning.message}</p>
+            <button onClick={() => setWarning(null)} style={{ background: "linear-gradient(135deg, #0f2027, #203a43)", color: "#fff", border: "none", padding: "12px 32px", borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Got It</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --- Sub-components --- */
+
+function Card({ title, children }) {
+  return (
+    <div style={{ background: "#fff", borderRadius: 16, padding: 24, marginBottom: 20, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #e2e8f0" }}>
+      <h2 style={{ margin: "0 0 20px", fontSize: 18, fontWeight: 700, color: "#0f2027", borderBottom: "2px solid #2c5364", paddingBottom: 10 }}>{title}</h2>
+      {children}
+    </div>
+  );
+}
+
+function Label({ children }) {
+  return <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#4a5568", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>{children}</label>;
+}
+
+function NumberInput({ value, onChange, min = 0, max = 99 }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 0, border: "2px solid #dce3ed", borderRadius: 8, overflow: "hidden", width: "fit-content" }}>
+      <button onClick={() => onChange(Math.max(min, value - 1))} style={numBtnStyle}>−</button>
+      <input
+        type="number"
+        value={value}
+        onChange={(e) => {
+          const v = parseInt(e.target.value) || 0;
+          onChange(Math.max(min, Math.min(max, v)));
+        }}
+        style={{ width: 56, textAlign: "center", border: "none", borderLeft: "2px solid #dce3ed", borderRight: "2px solid #dce3ed", fontSize: 16, fontWeight: 600, padding: "8px 0", outline: "none", color: "#1a1a2e", fontFamily: "inherit" }}
+      />
+      <button onClick={() => onChange(Math.min(max, value + 1))} style={numBtnStyle}>+</button>
+    </div>
+  );
+}
+
+/* --- Styles --- */
+
+const selectStyle = {
+  width: "100%", padding: "12px 16px", fontSize: 15, border: "2px solid #dce3ed", borderRadius: 8, background: "#fff", color: "#1a1a2e", fontFamily: "inherit", fontWeight: 500, outline: "none", cursor: "pointer", appearance: "auto",
+};
+
+const numBtnStyle = {
+  width: 40, height: 40, border: "none", background: "#f0f4f8", fontSize: 18, fontWeight: 700, color: "#203a43", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit",
+};
+
+const thStyle = { padding: "10px 12px", textAlign: "left", fontSize: 12, fontWeight: 700, color: "#4a5568", textTransform: "uppercase", letterSpacing: 0.5 };
+const tdStyle = { padding: "10px 12px" };
+
+const exportBtnStyle = {
+  background: "linear-gradient(135deg, #0f2027, #203a43)",
+  color: "#fff", border: "none", padding: "10px 20px", borderRadius: 8,
+  fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex",
+  alignItems: "center", fontFamily: "inherit", whiteSpace: "nowrap",
+};
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<EnfuzeConfigurator />);
+
+  </script>
+</body>
+</html>

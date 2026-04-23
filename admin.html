@@ -544,6 +544,34 @@ function ConfigTab({ config, onRefresh, showToast }) {
 function SettingsTab({ config = [], onRefresh, showToast }) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientLoaded, setRecipientLoaded] = useState(false);
+
+  useEffect(() => {
+    sb("admin_settings?setting_key=eq.quote_recipient_email&select=setting_value")
+      .then((data) => {
+        setRecipientEmail(data?.[0]?.setting_value || "");
+        setRecipientLoaded(true);
+      })
+      .catch(() => setRecipientLoaded(true));
+  }, []);
+
+  const saveRecipient = async () => {
+    if (!/^\S+@\S+\.\S+$/.test(recipientEmail)) return showToast("Enter a valid email", "error");
+    const existing = await sb("admin_settings?setting_key=eq.quote_recipient_email&select=setting_key");
+    if (existing && existing.length > 0) {
+      await sb("admin_settings?setting_key=eq.quote_recipient_email", {
+        method: "PATCH",
+        body: JSON.stringify({ setting_value: recipientEmail }),
+      });
+    } else {
+      await sb("admin_settings", {
+        method: "POST",
+        body: JSON.stringify({ setting_key: "quote_recipient_email", setting_value: recipientEmail }),
+      });
+    }
+    showToast("Quote recipient updated");
+  };
 
   const changePassword = async () => {
     if (!newPassword || newPassword.length < 6) return showToast("Password must be at least 6 characters", "error");
@@ -592,6 +620,27 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
           })}
         </div>
       )}
+
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 560, marginBottom: 20 }}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600 }}>Quote Email Recipient</h3>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: "#6b7c93" }}>
+          Email address that receives the CSV quote when the "Email" button is clicked in the configurator.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          <div style={{ flex: 1 }}>
+            <SmallLabel>Recipient Email</SmallLabel>
+            <input
+              type="email"
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              placeholder="brad@enfuzeatlanta.com"
+              disabled={!recipientLoaded}
+              style={inputStyle}
+            />
+          </div>
+          <button onClick={saveRecipient} disabled={!recipientLoaded} style={btnPrimary}>Save</button>
+        </div>
+      </div>
 
       <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 400 }}>
         <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>Change Admin Password</h3>

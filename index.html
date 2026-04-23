@@ -76,11 +76,13 @@ function EnfuzeConfigurator() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [productsRaw, ratesRaw, configRaw] = await Promise.all([
+        const [productsRaw, ratesRaw, configRaw, recipientRaw] = await Promise.all([
           sb("products?active=eq.true&order=sort_order,sku"),
           sb("install_rates?order=rate_group,sort_order"),
           sb("install_config?order=config_key"),
+          sb("admin_settings?setting_key=eq.quote_recipient_email&select=setting_value"),
         ]);
+        setRecipientEmail(recipientRaw?.[0]?.setting_value || "");
 
         // Build products lookup { sku: { name, price, category } }
         const prodMap = {};
@@ -127,6 +129,8 @@ function EnfuzeConfigurator() {
   const [cablePwr12, setCablePwr12] = useState(0);
   const [forcePlusAmp, setForcePlusAmp] = useState(false);
   const [warning, setWarning] = useState(null);
+  const [emailStatus, setEmailStatus] = useState(null);
+  const [recipientEmail, setRecipientEmail] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectDate, setProjectDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [laborView, setLaborView] = useState("total");
@@ -367,6 +371,75 @@ function EnfuzeConfigurator() {
     XLSX.writeFile(wb, fileName);
   };
 
+  const buildCSV = () => {
+    const esc = (v) => {
+      if (v === null || v === undefined) return "";
+      const s = String(v);
+      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const rows = [
+      ["Enfuze Atlanta — Product Configurator"],
+      ["Project:", projectName || "(No project name)"],
+      ["Date:", formatDate(projectDate)],
+      [],
+      ["EQUIPMENT"],
+      ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"],
+      ...quote.lineItems.map((item) => [item.sku, PRODUCTS[item.sku].name, item.qty, item.price, item.qty * item.price]),
+    ];
+    if (quote.installEnabled) {
+      rows.push([], ["INSTALLATION"]);
+      if (laborView === "itemized") {
+        rows.push(["Description", "Qty", "Rate", "Total"]);
+        quote.installItems.forEach((item) => rows.push([item.desc, item.qty, item.rate, item.total]));
+      } else {
+        rows.push(["Installation Total", "", "", quote.installTotal]);
+      }
+    }
+    rows.push([], ["", "", "", "Equipment Subtotal", quote.equipmentTotal]);
+    if (quote.installEnabled) rows.push(["", "", "", "Installation Subtotal", quote.installTotal]);
+    rows.push(["", "", "", "GRAND TOTAL", quote.grandTotal]);
+    return rows.map((r) => r.map(esc).join(",")).join("\r\n");
+  };
+
+  const emailQuote = async () => {
+    if (emailStatus === "sending") return;
+    setEmailStatus("sending");
+    try {
+      const csv = buildCSV();
+      const blob = new Blob([csv], { type: "text/csv" });
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      const baseName = projectName ? projectName.replace(/[^a-zA-Z0-9]/g, "_") : "Enfuze_Quote";
+      const filename = `${baseName}.csv`;
+      const subject = `Enfuze Quote — ${projectName || "Untitled Project"}`;
+      const body =
+        `Enfuze Atlanta — Product Configurator\n` +
+        `Project: ${projectName || "(No project name)"}\n` +
+        `Date: ${formatDate(projectDate)}\n\n` +
+        `Equipment Subtotal: $${quote.equipmentTotal.toLocaleString()}\n` +
+        (quote.installEnabled ? `Installation Subtotal: $${quote.installTotal.toLocaleString()}\n` : "") +
+        `Grand Total: $${quote.grandTotal.toLocaleString()}\n`;
+
+      const res = await fetch("/api/send-quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject, body, filename, contentBase64: base64 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Send failed (${res.status})`);
+      setEmailStatus("sent");
+      setTimeout(() => setEmailStatus(null), 3000);
+    } catch (e) {
+      console.error("Email quote failed:", e);
+      setEmailStatus("error");
+      setTimeout(() => setEmailStatus(null), 4000);
+    }
+  };
+
   if (!dataLoaded) {
     return (
       <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", maxWidth: 960, margin: "0 auto", padding: "24px 16px", textAlign: "center" }}>
@@ -557,12 +630,30 @@ function EnfuzeConfigurator() {
               <p style={{ margin: 0, fontSize: 16, fontWeight: 600, color: "#1a1a2e" }}>{projectName || "Untitled Project"}</p>
               <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7c93" }}>{formatDate(projectDate)}</p>
             </div>
-            <div className="no-print" style={{ display: "flex", gap: 8 }}>
+            <div className="no-print" style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
               <button onClick={exportPDF} style={exportBtnStyle}>
                 <span style={{ marginRight: 6 }}>📄</span> PDF
               </button>
               <button onClick={exportExcel} style={{ ...exportBtnStyle, background: "linear-gradient(135deg, #0d7c3e, #15803d)" }}>
                 <span style={{ marginRight: 6 }}>📊</span> Excel
+              </button>
+              <button
+                onClick={emailQuote}
+                disabled={emailStatus === "sending" || !recipientEmail}
+                title={recipientEmail ? `Send CSV to ${recipientEmail}` : "No recipient email configured in admin"}
+                style={{
+                  ...exportBtnStyle,
+                  background: emailStatus === "error"
+                    ? "linear-gradient(135deg, #c53030, #9b2c2c)"
+                    : emailStatus === "sent"
+                      ? "linear-gradient(135deg, #0d7c3e, #15803d)"
+                      : "linear-gradient(135deg, #2563eb, #1d4ed8)",
+                  opacity: emailStatus === "sending" || !recipientEmail ? 0.6 : 1,
+                  cursor: emailStatus === "sending" || !recipientEmail ? "not-allowed" : "pointer",
+                }}
+              >
+                <span style={{ marginRight: 6 }}>📧</span>
+                {emailStatus === "sending" ? "Sending..." : emailStatus === "sent" ? "Sent!" : emailStatus === "error" ? "Failed" : "Email"}
               </button>
             </div>
           </div>

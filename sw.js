@@ -1,6 +1,6 @@
 // Enfuze Configurator — service worker
 // Bump CACHE_VERSION when shipping updates so clients pick up new app shell.
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const APP_CACHE = `enfuze-app-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `enfuze-runtime-${CACHE_VERSION}`;
 

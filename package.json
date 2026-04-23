@@ -1,0 +1,12 @@
+{
+  "name": "enfuze-configurator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Enfuze Atlanta product configurator (static + Vercel serverless functions).",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.16"
+  }
+}

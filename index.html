@@ -4,6 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Enfuze Atlanta — Product Configurator</title>
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#203a43" />
+  <link rel="icon" type="image/png" href="./enfuzelogo-brown.png" />
+  <link rel="apple-touch-icon" href="./enfuzelogo-brown.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Enfuze" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
@@ -720,6 +727,15 @@ const exportBtnStyle = {
 
 ReactDOM.createRoot(document.getElementById("root")).render(<EnfuzeConfigurator />);
 
+  </script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch((err) => {
+          console.warn("Service worker registration failed:", err);
+        });
+      });
+    }
   </script>
 </body>
 </html>

@@ -47,6 +47,7 @@ const DEFAULT_CONFIG = {
   amp_upgrade_threshold: 8,
   standard_amp_sku: "FA-12L-SNS",
   plus_amp_sku: "FA-PLUS-12L-SNS",
+  installation_enabled: true,
 };
 
 function createAudioZone(id) {
@@ -93,7 +94,10 @@ function EnfuzeConfigurator() {
         // Build config lookup { key: value }
         const cfgMap = {};
         (configRaw || []).forEach((c) => {
-          cfgMap[c.config_key] = isNaN(c.config_value) ? c.config_value : parseInt(c.config_value);
+          const v = c.config_value;
+          if (v === "true") cfgMap[c.config_key] = true;
+          else if (v === "false") cfgMap[c.config_key] = false;
+          else cfgMap[c.config_key] = isNaN(v) ? v : parseInt(v);
         });
         setConfig((prev) => ({ ...prev, ...cfgMap }));
 
@@ -258,6 +262,7 @@ function EnfuzeConfigurator() {
 
     // Installation
     const installItems = [];
+    const installEnabled = CONFIG.installation_enabled !== false;
     const hasAnyItems = lineItems.length > 0;
     const insectOnly = serviceType === "insect";
     const rateGroup = insectOnly ? "insect_only" : "standard";
@@ -266,29 +271,31 @@ function EnfuzeConfigurator() {
     // Helper to get the customer price for a rate description
     const getRate = (desc) => (rates[desc] ? rates[desc].price : 0);
 
-    if (hasAnyItems) {
-      const truckRate = getRate("Truck Fee");
-      const siteRate = getRate("Site Design & Coordination");
-      if (truckRate) installItems.push({ desc: "Truck Fee", qty: 1, rate: truckRate, total: truckRate });
-      if (siteRate) installItems.push({ desc: "Site Design & Coordination", qty: 1, rate: siteRate, total: siteRate });
-    }
-    if (!insectOnly && totalSpeakerSubPoints > 0) {
-      const spkRate = getRate("Speaker/Sub Audio Point Fee");
-      if (spkRate) installItems.push({ desc: "Speaker/Sub Audio Point Fee", qty: totalSpeakerSubPoints, rate: spkRate, total: totalSpeakerSubPoints * spkRate });
-    }
-    if (!insectOnly && totalAudioZones > 0) {
-      const ampRate = getRate("Amp & Transformer Install");
-      if (ampRate) installItems.push({ desc: "Amp & Transformer Install", qty: totalAudioZones, rate: ampRate, total: totalAudioZones * ampRate });
-    }
-    if (totalRepellers > 0) {
-      const thermRate = getRate("Thermacell Point Fee");
-      if (thermRate) installItems.push({ desc: "Thermacell Point Fee", qty: totalRepellers, rate: thermRate, total: totalRepellers * thermRate });
+    if (installEnabled) {
+      if (hasAnyItems) {
+        const truckRate = getRate("Truck Fee");
+        const siteRate = getRate("Site Design & Coordination");
+        if (truckRate) installItems.push({ desc: "Truck Fee", qty: 1, rate: truckRate, total: truckRate });
+        if (siteRate) installItems.push({ desc: "Site Design & Coordination", qty: 1, rate: siteRate, total: siteRate });
+      }
+      if (!insectOnly && totalSpeakerSubPoints > 0) {
+        const spkRate = getRate("Speaker/Sub Audio Point Fee");
+        if (spkRate) installItems.push({ desc: "Speaker/Sub Audio Point Fee", qty: totalSpeakerSubPoints, rate: spkRate, total: totalSpeakerSubPoints * spkRate });
+      }
+      if (!insectOnly && totalAudioZones > 0) {
+        const ampRate = getRate("Amp & Transformer Install");
+        if (ampRate) installItems.push({ desc: "Amp & Transformer Install", qty: totalAudioZones, rate: ampRate, total: totalAudioZones * ampRate });
+      }
+      if (totalRepellers > 0) {
+        const thermRate = getRate("Thermacell Point Fee");
+        if (thermRate) installItems.push({ desc: "Thermacell Point Fee", qty: totalRepellers, rate: thermRate, total: totalRepellers * thermRate });
+      }
     }
 
     const equipmentTotal = lineItems.reduce((sum, item) => sum + item.qty * item.price, 0);
     const installTotal = installItems.reduce((sum, item) => sum + item.total, 0);
 
-    return { lineItems, installItems, equipmentTotal, installTotal, grandTotal: equipmentTotal + installTotal };
+    return { lineItems, installItems, equipmentTotal, installTotal, installEnabled, grandTotal: equipmentTotal + installTotal };
   }, [audioZones, insectZones, extraCable10, extraCable24, cableSpk16Bk, cableSpk16Wh, cableSub12, cablePwr12, serviceType, PRODUCTS, INSTALL_RATES, CONFIG]);
 
   const quote = calculateQuote();
@@ -331,12 +338,14 @@ function EnfuzeConfigurator() {
     const equipRows = quote.lineItems.map((item) => [
       item.sku, PRODUCTS[item.sku].name, item.qty, item.price, item.qty * item.price,
     ]);
-    const installSection = laborView === "itemized"
-      ? [[], ["INSTALLATION"], ["Description", "Qty", "Rate", "Total"], ...quote.installItems.map((item) => [item.desc, item.qty, item.rate, item.total])]
-      : [[], ["INSTALLATION"], ["Installation Total", "", "", quote.installTotal]];
+    const installSection = !quote.installEnabled
+      ? []
+      : laborView === "itemized"
+        ? [[], ["INSTALLATION"], ["Description", "Qty", "Rate", "Total"], ...quote.installItems.map((item) => [item.desc, item.qty, item.rate, item.total])]
+        : [[], ["INSTALLATION"], ["Installation Total", "", "", quote.installTotal]];
     const totals = [
       [], ["", "", "", "Equipment Subtotal", quote.equipmentTotal],
-      ["", "", "", "Installation Subtotal", quote.installTotal],
+      ...(quote.installEnabled ? [["", "", "", "Installation Subtotal", quote.installTotal]] : []),
       ["", "", "", "GRAND TOTAL", quote.grandTotal],
     ];
     const data = [...header, ...equipRows, ...installSection, ...totals];
@@ -564,6 +573,8 @@ function EnfuzeConfigurator() {
           </div>
 
           {/* Installation */}
+          {quote.installEnabled && (
+          <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>Installation</h3>
             <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#6b7c93" }}>
@@ -608,6 +619,8 @@ function EnfuzeConfigurator() {
               <span style={{ fontSize: 15, fontWeight: 700, color: "#203a43" }}>Installation Total</span>
               <span style={{ fontSize: 18, fontWeight: 700, color: "#203a43" }}>${quote.installTotal.toLocaleString()}</span>
             </div>
+          )}
+          </>
           )}
 
           {/* Grand Total */}

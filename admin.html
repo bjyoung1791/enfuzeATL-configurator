@@ -154,7 +154,7 @@ function AdminPanel() {
             {activeTab === "products" && <ProductsTab products={products} onRefresh={fetchAll} showToast={showToast} />}
             {activeTab === "rates" && <RatesTab rates={installRates} onRefresh={fetchAll} showToast={showToast} />}
             {activeTab === "config" && <ConfigTab config={installConfig} onRefresh={fetchAll} showToast={showToast} />}
-            {activeTab === "settings" && <SettingsTab showToast={showToast} />}
+            {activeTab === "settings" && <SettingsTab config={installConfig} onRefresh={fetchAll} showToast={showToast} />}
           </>
         )}
       </div>
@@ -481,16 +481,15 @@ function ConfigTab({ config, onRefresh, showToast }) {
   const startEdit = (c) => { setEditKey(c.config_key); setEditVal(c.config_value); };
   const cancel = () => { setEditKey(null); setEditVal(""); };
 
-  const save = async (c, valOverride) => {
-    const finalVal = valOverride !== undefined ? valOverride : editVal;
-    await sb(`install_config?id=eq.${c.id}`, { method: "PATCH", body: JSON.stringify({ config_value: finalVal }) });
+  const save = async (c) => {
+    await sb(`install_config?id=eq.${c.id}`, { method: "PATCH", body: JSON.stringify({ config_value: editVal }) });
     showToast("Config updated");
     cancel();
     onRefresh();
   };
 
   const isBool = (v) => v === "true" || v === "false";
-  const toggleBool = (c) => save(c, c.config_value === "true" ? "false" : "true");
+  const rows = config.filter((c) => !isBool(c.config_value));
 
   return (
     <div>
@@ -509,34 +508,19 @@ function ConfigTab({ config, onRefresh, showToast }) {
             </tr>
           </thead>
           <tbody>
-            {config.map((c) => {
-              const bool = isBool(c.config_value);
-              const on = c.config_value === "true";
-              return (
+            {rows.map((c) => (
               <tr key={c.id} style={{ borderTop: "1px solid #edf2f7" }}>
                 <td style={{ ...tdAdmin, fontWeight: 600 }}>{c.label}</td>
                 <td style={{ ...tdAdmin, color: "#6b7c93" }}>{c.description}</td>
                 <td style={{ ...tdAdmin, textAlign: "center" }}>
-                  {bool ? (
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                      <div
-                        onClick={() => toggleBool(c)}
-                        style={{ width: 44, height: 24, borderRadius: 12, background: on ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
-                      >
-                        <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: on ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                      </div>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: on ? "#203a43" : "#6b7c93", textTransform: "uppercase", letterSpacing: 0.5, minWidth: 24, textAlign: "left" }}>{on ? "On" : "Off"}</span>
-                    </div>
-                  ) : editKey === c.config_key ? (
+                  {editKey === c.config_key ? (
                     <input value={editVal} onChange={(e) => setEditVal(e.target.value)} style={{ ...inputStyle, fontSize: 13, textAlign: "center", width: 120 }} />
                   ) : (
                     <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#203a43" }}>{c.config_value}</span>
                   )}
                 </td>
                 <td style={{ ...tdAdmin, textAlign: "right" }}>
-                  {bool ? (
-                    <span style={{ color: "#cbd5e0", fontSize: 12 }}>—</span>
-                  ) : editKey === c.config_key ? (
+                  {editKey === c.config_key ? (
                     <>
                       <button onClick={() => save(c)} style={btnSmall}>Save</button>
                       <button onClick={cancel} style={{ ...btnSmall, marginLeft: 4 }}>Cancel</button>
@@ -546,8 +530,7 @@ function ConfigTab({ config, onRefresh, showToast }) {
                   )}
                 </td>
               </tr>
-              );
-            })}
+            ))}
           </tbody>
         </table>
       </div>
@@ -556,7 +539,7 @@ function ConfigTab({ config, onRefresh, showToast }) {
 }
 
 // ── SETTINGS TAB ─────────────────────────────────────────────
-function SettingsTab({ showToast }) {
+function SettingsTab({ config = [], onRefresh, showToast }) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
@@ -569,9 +552,45 @@ function SettingsTab({ showToast }) {
     setConfirmPassword("");
   };
 
+  const isBool = (v) => v === "true" || v === "false";
+  const toggles = config.filter((c) => isBool(c.config_value));
+  const toggleBool = async (c) => {
+    const newVal = c.config_value === "true" ? "false" : "true";
+    await sb(`install_config?id=eq.${c.id}`, { method: "PATCH", body: JSON.stringify({ config_value: newVal }) });
+    showToast("Setting updated");
+    onRefresh && onRefresh();
+  };
+
   return (
     <div>
       <h2 style={{ margin: "0 0 24px", fontSize: 18, fontWeight: 700, color: "#0f2027" }}>Settings</h2>
+
+      {toggles.length > 0 && (
+        <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 560, marginBottom: 20 }}>
+          <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>Configurator Options</h3>
+          {toggles.map((c, i) => {
+            const on = c.config_value === "true";
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "12px 0", borderTop: i === 0 ? "none" : "1px solid #edf2f7" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#1a1a2e" }}>{c.label}</div>
+                  {c.description && <div style={{ fontSize: 12, color: "#6b7c93", marginTop: 2 }}>{c.description}</div>}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div
+                    onClick={() => toggleBool(c)}
+                    style={{ width: 44, height: 24, borderRadius: 12, background: on ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
+                  >
+                    <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: on ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: on ? "#203a43" : "#6b7c93", textTransform: "uppercase", letterSpacing: 0.5, minWidth: 24 }}>{on ? "On" : "Off"}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 400 }}>
         <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>Change Admin Password</h3>
         <div style={{ marginBottom: 12 }}>

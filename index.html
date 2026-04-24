@@ -736,8 +736,10 @@ function EnfuzeConfigurator({ session, profile }) {
     const BORDER = "#e2e8f0";
 
     // Header block: logo + company info on the left, title + proposal meta on the right.
+    // When a logo is present it already carries the company name, so we don't
+    // repeat "Enfuze Atlanta" as text underneath it.
     const companyBlock = [];
-    if (company.name) companyBlock.push({ text: company.name, style: "companyName" });
+    if (!company.logo && company.name) companyBlock.push({ text: company.name, style: "companyName" });
     if (company.address) companyBlock.push({ text: company.address, style: "companyMeta" });
     if (company.phone) companyBlock.push({ text: company.phone, style: "companyMeta" });
     if (company.website) companyBlock.push({ text: company.website, style: "companyMeta" });
@@ -873,8 +875,8 @@ function EnfuzeConfigurator({ session, profile }) {
       }
     }
     totalsRows.push([
-      { text: "GRAND TOTAL", alignment: "right", fontSize: 13, bold: true, color: "#fff", fillColor: ACCENT, margin: [0, 6, 10, 6] },
-      { text: fmtMoney(quote.grandTotal), alignment: "right", fontSize: 13, bold: true, color: "#fff", fillColor: ACCENT, margin: [10, 6, 0, 6] },
+      { text: "GRAND TOTAL", alignment: "right", fontSize: 13, bold: true, color: "#fff", fillColor: ACCENT, margin: [14, 8, 10, 8] },
+      { text: fmtMoney(quote.grandTotal), alignment: "right", fontSize: 13, bold: true, color: "#fff", fillColor: ACCENT, margin: [10, 8, 14, 8] },
     ]);
 
     const totalsTable = {

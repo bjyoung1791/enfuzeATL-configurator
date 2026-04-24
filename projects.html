@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Enfuze — Projects</title>
+  <link rel="icon" type="image/png" href="./enfuzelogo-brown.png" />
+  <link rel="apple-touch-icon" href="./enfuzelogo-brown.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f7f9fb; font-family: 'DM Sans', 'Segoe UI', sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script type="text/babel">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+// ── SUPABASE CONNECTION ──────────────────────────────────────
+const SUPABASE_URL = "https://mkjcfffswfbfezoxjxtt.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_yIoEW1BIUeWbBdpsrl9PQQ_OlmYTElP";
+
+const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storage: window.localStorage, storageKey: "enfuze-auth" },
+});
+
+async function getAuthHeaders() {
+  const { data: { session } } = await supa.auth.getSession();
+  const token = session?.access_token || SUPABASE_ANON_KEY;
+  return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` };
+}
+
+const sb = async (endpoint, options = {}) => {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+    ...options,
+    headers: {
+      ...headers,
+      "Content-Type": "application/json",
+      Prefer: options.prefer || "return=representation",
+      ...(options.headers || {}),
+    },
+  });
+  if (res.status === 204) return null;
+  return res.json();
+};
+
+// ── AUTH SHELL ───────────────────────────────────────────────
+function App() {
+  const [status, setStatus] = useState("checking");
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [err, setErr] = useState("");
+
+  const loadProfile = useCallback(async (s) => {
+    if (!s) { setProfile(null); setStatus("login"); return; }
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${s.user.id}&select=*`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${s.access_token}` },
+      });
+      const rows = await res.json();
+      const p = rows?.[0];
+      if (!p) { setErr("No profile found."); await supa.auth.signOut(); setStatus("login"); return; }
+      if (p.active === false) { setErr("Account deactivated."); await supa.auth.signOut(); setStatus("login"); return; }
+      if (p.must_change_password) { window.location.href = "./index.html"; return; }
+      setProfile(p);
+      setStatus("ready");
+    } catch (e) {
+      setErr("Failed to load profile.");
+      setStatus("login");
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    supa.auth.getSession().then(({ data: { session: s } }) => {
+      if (!mounted) return;
+      setSession(s);
+      loadProfile(s);
+    });
+    const { data: sub } = supa.auth.onAuthStateChange((_e, s) => {
+      if (!mounted) return;
+      setSession(s);
+      if (s) loadProfile(s);
+      else { setProfile(null); setStatus("login"); }
+    });
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
+  }, [loadProfile]);
+
+  if (status === "checking") return <Splash>Loading...</Splash>;
+  if (status === "login") {
+    // Redirect to main app for login — avoids reimplementing the login screen.
+    window.location.href = "./index.html";
+    return <Splash>Redirecting to sign in...</Splash>;
+  }
+  return <ProjectsPage session={session} profile={profile} />;
+}
+
+function Splash({ children }) {
+  return (
+    <div style={{ maxWidth: 480, margin: "120px auto", textAlign: "center" }}>
+      <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16, marginBottom: 24 }}>
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Enfuze Atlanta</h1>
+      </div>
+      <p style={{ color: "#6b7c93", fontSize: 14 }}>{children}</p>
+    </div>
+  );
+}
+
+// ── PROJECTS PAGE ────────────────────────────────────────────
+function ProjectsPage({ session, profile }) {
+  const [showArchived, setShowArchived] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [creatorMap, setCreatorMap] = useState({}); // id → email
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState("updated_at");
+  const [sortDir, setSortDir] = useState("desc");
+  const [toast, setToast] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const showToast = (msg, type = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const logout = async () => { await supa.auth.signOut(); };
+
+  const isAdmin = profile.role === "admin";
+  const isLead = profile.role === "lead_designer";
+  const canSeeAll = isAdmin || isLead;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await sb(`projects?archived=eq.${showArchived}&order=updated_at.desc`);
+      setProjects(Array.isArray(data) ? data : []);
+      if (canSeeAll && Array.isArray(data) && data.length > 0) {
+        const uniqueIds = Array.from(new Set(data.map((p) => p.created_by)));
+        if (uniqueIds.length > 0) {
+          const filter = uniqueIds.map((id) => `id.eq.${id}`).join(",");
+          const rows = await sb(`profiles?or=(${filter})&select=id,email,full_name`);
+          const map = {};
+          (Array.isArray(rows) ? rows : []).forEach((r) => { map[r.id] = r.full_name || r.email; });
+          setCreatorMap(map);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      showToast("Failed to load projects", "error");
+    }
+    setLoading(false);
+  }, [showArchived, canSeeAll]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const canEdit = useCallback((p) => {
+    if (isAdmin || isLead) return true;
+    return p.created_by === profile.id;
+  }, [isAdmin, isLead, profile.id]);
+
+  const canDelete = useCallback((p) => {
+    if (isAdmin) return true;
+    if (isLead) return false;
+    return p.created_by === profile.id;
+  }, [isAdmin, isLead, profile.id]);
+
+  const setOutcome = async (p, outcome) => {
+    try {
+      await sb(`projects?id=eq.${p.id}`, { method: "PATCH", body: JSON.stringify({ outcome }) });
+      showToast(outcome ? `Marked ${outcome}` : "Outcome cleared");
+      load();
+    } catch (e) { showToast(e.message || "Update failed", "error"); }
+  };
+
+  const setArchived = async (p, archived) => {
+    try {
+      await sb(`projects?id=eq.${p.id}`, { method: "PATCH", body: JSON.stringify({ archived }) });
+      showToast(archived ? "Archived" : "Reopened");
+      load();
+    } catch (e) { showToast(e.message || "Update failed", "error"); }
+  };
+
+  const doDelete = async (p) => {
+    try {
+      await sb(`projects?id=eq.${p.id}`, { method: "DELETE" });
+      setConfirmDelete(null);
+      showToast("Project deleted");
+      load();
+    } catch (e) { showToast(e.message || "Delete failed", "error"); }
+  };
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = projects;
+    if (q) {
+      list = list.filter((p) => {
+        const creator = (creatorMap[p.created_by] || "").toLowerCase();
+        return (
+          (p.name || "").toLowerCase().includes(q) ||
+          (p.service_type || "").toLowerCase().includes(q) ||
+          (p.outcome || "").toLowerCase().includes(q) ||
+          creator.includes(q)
+        );
+      });
+    }
+    const cmp = (a, b) => {
+      let va = a[sortKey];
+      let vb = b[sortKey];
+      if (sortKey === "grand_total" || sortKey === "equipment_total" || sortKey === "installation_total") {
+        va = Number(va || 0); vb = Number(vb || 0);
+      } else if (sortKey === "project_date" || sortKey === "created_at" || sortKey === "updated_at") {
+        va = va ? new Date(va).getTime() : 0;
+        vb = vb ? new Date(vb).getTime() : 0;
+      } else {
+        va = (va || "").toString().toLowerCase();
+        vb = (vb || "").toString().toLowerCase();
+      }
+      if (va < vb) return sortDir === "asc" ? -1 : 1;
+      if (va > vb) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    };
+    return [...list].sort(cmp);
+  }, [projects, search, sortKey, sortDir, creatorMap]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDir(key === "name" || key === "service_type" ? "asc" : "desc");
+    }
+  };
+
+  const arrow = (key) => sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+
+  const outcomePill = (o) => {
+    if (o === "won") return <span style={{ ...pill, background: "#c6f6d5", color: "#22543d" }}>Won</span>;
+    if (o === "lost") return <span style={{ ...pill, background: "#fed7d7", color: "#9b2c2c" }}>Lost</span>;
+    return <span style={{ ...pill, background: "#e2e8f0", color: "#4a5568" }}>Open</span>;
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f7f9fb" }}>
+      {/* Top nav */}
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "16px 16px 0", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, fontSize: 13 }}>
+        <span style={{ color: "#6b7c93", marginRight: 8 }}>
+          {profile.full_name || profile.email} · <span style={{ textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, fontSize: 11, color: "#203a43" }}>{profile.role.replace("_", " ")}</span>
+        </span>
+        <a href="./index.html" style={navLinkStyle}>Configurator</a>
+        {isAdmin && <a href="./admin.html" style={navLinkStyle}>Admin</a>}
+        <button onClick={logout} style={navLinkStyle}>Log out</button>
+      </div>
+
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 16px" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "12px 28px", borderRadius: 12 }}>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#fff" }}>{showArchived ? "Archived Projects" : "Projects"}</h1>
+          </div>
+          <a href="./index.html" style={{ ...btnPrimary, textDecoration: "none" }}>+ New Project</a>
+        </div>
+
+        {/* Toolbar */}
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
+          <div style={{ display: "flex", background: "#fff", borderRadius: 10, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+            <button
+              onClick={() => setShowArchived(false)}
+              style={{ ...tabBtn, background: !showArchived ? "#203a43" : "transparent", color: !showArchived ? "#fff" : "#6b7c93" }}
+            >Active</button>
+            <button
+              onClick={() => setShowArchived(true)}
+              style={{ ...tabBtn, background: showArchived ? "#203a43" : "transparent", color: showArchived ? "#fff" : "#6b7c93" }}
+            >Archived</button>
+          </div>
+          <input
+            type="search"
+            placeholder={`Search ${canSeeAll ? "name, creator, type" : "name, type"}...`}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ flex: 1, minWidth: 200, padding: "10px 14px", fontSize: 14, border: "2px solid #dce3ed", borderRadius: 8, background: "#fff", fontFamily: "inherit", outline: "none" }}
+          />
+          <div style={{ fontSize: 12, color: "#6b7c93" }}>{filtered.length} {filtered.length === 1 ? "project" : "projects"}</div>
+        </div>
+
+        {/* Table */}
+        <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "auto" }}>
+          {loading ? (
+            <p style={{ textAlign: "center", color: "#6b7c93", padding: 40 }}>Loading projects...</p>
+          ) : filtered.length === 0 ? (
+            <p style={{ textAlign: "center", color: "#6b7c93", padding: 40 }}>
+              {showArchived ? "No archived projects." : search ? "No matches." : "No projects yet. Click \"+ New Project\" to get started."}
+            </p>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 900 }}>
+              <thead>
+                <tr style={{ background: "#f7f9fb" }}>
+                  <th style={thSort} onClick={() => toggleSort("name")}>Name{arrow("name")}</th>
+                  <th style={thSort} onClick={() => toggleSort("service_type")}>Type{arrow("service_type")}</th>
+                  {canSeeAll && <th style={thAdmin}>Creator</th>}
+                  <th style={thSort} onClick={() => toggleSort("project_date")}>Project Date{arrow("project_date")}</th>
+                  <th style={thSort} onClick={() => toggleSort("updated_at")}>Last Updated{arrow("updated_at")}</th>
+                  <th style={{ ...thSort, textAlign: "right" }} onClick={() => toggleSort("grand_total")}>Total{arrow("grand_total")}</th>
+                  <th style={{ ...thSort, textAlign: "center" }} onClick={() => toggleSort("outcome")}>Outcome{arrow("outcome")}</th>
+                  <th style={{ ...thAdmin, textAlign: "right", width: 260 }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((p) => (
+                  <tr key={p.id} style={{ borderTop: "1px solid #edf2f7" }}>
+                    <td style={tdAdmin}>
+                      <a href={`./index.html?project=${p.id}`} style={{ color: "#203a43", fontWeight: 600, textDecoration: "none" }}>{p.name || "(untitled)"}</a>
+                    </td>
+                    <td style={{ ...tdAdmin, color: "#6b7c93", textTransform: "capitalize" }}>{p.service_type || "—"}</td>
+                    {canSeeAll && <td style={{ ...tdAdmin, color: "#6b7c93" }}>{creatorMap[p.created_by] || "—"}</td>}
+                    <td style={{ ...tdAdmin, color: "#6b7c93" }}>{formatDate(p.project_date)}</td>
+                    <td style={{ ...tdAdmin, color: "#6b7c93" }}>{formatDateTime(p.updated_at)}</td>
+                    <td style={{ ...tdAdmin, textAlign: "right", fontWeight: 600 }}>${Number(p.grand_total || 0).toLocaleString()}</td>
+                    <td style={{ ...tdAdmin, textAlign: "center" }}>{outcomePill(p.outcome)}</td>
+                    <td style={{ ...tdAdmin, textAlign: "right" }}>
+                      <div style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        {canEdit(p) && (
+                          <a href={`./index.html?project=${p.id}`} style={{ ...btnSmall, textDecoration: "none" }}>Edit</a>
+                        )}
+                        {canEdit(p) && (
+                          <OutcomeMenu project={p} onSet={setOutcome} />
+                        )}
+                        {canEdit(p) && (
+                          p.archived
+                            ? <button onClick={() => setArchived(p, false)} style={btnSmall}>Reopen</button>
+                            : <button onClick={() => setArchived(p, true)} style={btnSmall}>Archive</button>
+                        )}
+                        {canDelete(p) && (
+                          <button onClick={() => setConfirmDelete(p)} style={{ ...btnSmall, color: "#e53e3e" }}>Delete</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* Delete confirm */}
+      {confirmDelete && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(15,32,39,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 48px rgba(0,0,0,0.2)", textAlign: "center" }}>
+            <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#fed7d7", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 28 }}>🗑️</div>
+            <h3 style={{ margin: "0 0 8px", fontSize: 20, fontWeight: 700 }}>Delete project</h3>
+            <p style={{ margin: "0 0 8px", fontSize: 14, color: "#4a5568" }}>
+              Permanently delete <strong>{confirmDelete.name || "(untitled)"}</strong>?
+            </p>
+            <p style={{ margin: "0 0 24px", fontSize: 13, color: "#e53e3e", fontWeight: 600 }}>This cannot be undone.</p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <button onClick={() => setConfirmDelete(null)} style={btnSecondary}>Cancel</button>
+              <button onClick={() => doDelete(confirmDelete)} style={{ ...btnPrimary, background: "#e53e3e" }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div style={{ position: "fixed", bottom: 24, right: 24, padding: "12px 24px", borderRadius: 10, background: toast.type === "error" ? "#e53e3e" : "#203a43", color: "#fff", fontSize: 14, fontWeight: 600, boxShadow: "0 4px 12px rgba(0,0,0,0.15)", zIndex: 9999 }}>{toast.msg}</div>
+      )}
+    </div>
+  );
+}
+
+function OutcomeMenu({ project, onSet }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <button onClick={() => setOpen(!open)} style={btnSmall}>
+        Outcome ▾
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 50 }} />
+          <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4, background: "#fff", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", border: "1px solid #e2e8f0", zIndex: 100, minWidth: 140, overflow: "hidden" }}>
+            <button onClick={() => { setOpen(false); onSet(project, "won"); }} style={menuItemStyle}>Mark Won</button>
+            <button onClick={() => { setOpen(false); onSet(project, "lost"); }} style={menuItemStyle}>Mark Lost</button>
+            <button onClick={() => { setOpen(false); onSet(project, null); }} style={{ ...menuItemStyle, color: "#6b7c93" }}>Clear</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function formatDate(d) {
+  if (!d) return "—";
+  const [y, m, day] = d.split("-");
+  return `${m}/${day}/${y}`;
+}
+function formatDateTime(d) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  return dt.toLocaleDateString() + " " + dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// Styles
+const pill = { display: "inline-block", padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 };
+const navLinkStyle = { background: "#fff", color: "#203a43", border: "2px solid #dce3ed", padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", textDecoration: "none", display: "inline-block" };
+const btnPrimary = { background: "linear-gradient(135deg, #0f2027, #203a43)", color: "#fff", border: "none", padding: "10px 20px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" };
+const btnSecondary = { background: "#fff", color: "#203a43", border: "2px solid #dce3ed", padding: "10px 20px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" };
+const btnSmall = { background: "#fff", border: "1px solid #dce3ed", padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, color: "#203a43", cursor: "pointer", fontFamily: "inherit" };
+const thAdmin = { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 700, color: "#4a5568", textTransform: "uppercase", letterSpacing: 0.5 };
+const thSort = { ...thAdmin, cursor: "pointer", userSelect: "none" };
+const tdAdmin = { padding: "10px 12px" };
+const tabBtn = { padding: "10px 20px", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" };
+const menuItemStyle = { display: "block", width: "100%", padding: "10px 16px", border: "none", background: "none", textAlign: "left", fontSize: 13, fontWeight: 600, color: "#203a43", cursor: "pointer", fontFamily: "inherit" };
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch((err) => {
+          console.warn("Service worker registration failed:", err);
+        });
+      });
+    }
+  </script>
+</body>
+</html>

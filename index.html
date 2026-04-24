@@ -235,6 +235,7 @@ function TopNav({ profile, onLogout }) {
       <span style={{ color: "#6b7c93", marginRight: 8 }}>
         {profile.full_name || profile.email} · <span style={{ textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, fontSize: 11, color: "#203a43" }}>{profile.role.replace("_", " ")}</span>
       </span>
+      <a href="./projects.html" style={navLinkStyle}>Projects</a>
       {isAdmin && (
         <a href="./admin.html" style={navLinkStyle}>Admin</a>
       )}
@@ -324,6 +325,47 @@ function EnfuzeConfigurator({ session, profile }) {
     };
     load();
   }, []);
+
+  // Load a project from ?project=<id> URL param, if present.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const pid = params.get("project");
+    if (!pid) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingProject(true);
+      try {
+        const rows = await sb(`projects?id=eq.${pid}&select=*`);
+        if (cancelled) return;
+        const p = Array.isArray(rows) ? rows[0] : null;
+        if (!p) {
+          console.warn("Project not found or access denied:", pid);
+          setLoadingProject(false);
+          return;
+        }
+        const s = p.state || {};
+        setProjectName(p.name || "");
+        setProjectDate(p.project_date || new Date().toISOString().slice(0, 10));
+        setServiceType(s.serviceType || "");
+        setAudioZones(Array.isArray(s.audioZones) ? s.audioZones : []);
+        setInsectZones(Array.isArray(s.insectZones) ? s.insectZones : []);
+        setExtraCable10(s.extraCable10 || 0);
+        setExtraCable24(s.extraCable24 || 0);
+        setCableSpk16Bk(s.cableSpk16Bk || 0);
+        setCableSpk16Wh(s.cableSpk16Wh || 0);
+        setCableSub12(s.cableSub12 || 0);
+        setCablePwr12(s.cablePwr12 || 0);
+        setForcePlusAmp(!!s.forcePlusAmp);
+        setLaborView(s.laborView || "total");
+        setLoadedProjectId(p.id);
+      } catch (e) {
+        console.error("Failed to load project:", e);
+      } finally {
+        if (!cancelled) setLoadingProject(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const [serviceType, setServiceType] = useState("");
   const [audioZones, setAudioZones] = useState([]);
   const [insectZones, setInsectZones] = useState([]);
@@ -340,6 +382,9 @@ function EnfuzeConfigurator({ session, profile }) {
   const [projectName, setProjectName] = useState("");
   const [projectDate, setProjectDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [laborView, setLaborView] = useState("total");
+  const [loadedProjectId, setLoadedProjectId] = useState(null);
+  const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+  const [loadingProject, setLoadingProject] = useState(false);
   const printRef = useRef(null);
 
   const showAudio = serviceType === "audio" || serviceType === "both";
@@ -577,6 +622,63 @@ function EnfuzeConfigurator({ session, profile }) {
     XLSX.writeFile(wb, fileName);
   };
 
+  const saveProject = async () => {
+    if (saveStatus === "saving") return;
+    if (!projectName.trim()) {
+      setWarning({ title: "Project name required", message: "Please enter a project name before saving." });
+      return;
+    }
+    setSaveStatus("saving");
+    const state = {
+      serviceType,
+      audioZones,
+      insectZones,
+      extraCable10,
+      extraCable24,
+      cableSpk16Bk,
+      cableSpk16Wh,
+      cableSub12,
+      cablePwr12,
+      forcePlusAmp,
+      laborView,
+    };
+    const payload = {
+      name: projectName.trim(),
+      project_date: projectDate || null,
+      service_type: serviceType || null,
+      state,
+      equipment_total: quote.equipmentTotal,
+      installation_total: quote.installTotal,
+      grand_total: quote.grandTotal,
+    };
+    try {
+      if (loadedProjectId) {
+        await sb(`projects?id=eq.${loadedProjectId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        payload.created_by = profile.id;
+        const rows = await sb("projects", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        const newId = Array.isArray(rows) ? rows[0]?.id : null;
+        if (!newId) throw new Error("Insert did not return an id");
+        setLoadedProjectId(newId);
+        const url = new URL(window.location);
+        url.searchParams.set("project", newId);
+        window.history.replaceState(null, "", url.toString());
+      }
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus(null), 2500);
+    } catch (e) {
+      console.error("Save failed:", e);
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus(null), 4000);
+    }
+  };
+
   const buildCSV = () => {
     const esc = (v) => {
       if (v === null || v === undefined) return "";
@@ -670,6 +772,14 @@ function EnfuzeConfigurator({ session, profile }) {
   return (
     <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", background: "#f7f9fb", minHeight: "100vh" }}>
       <TopNav profile={profile} onLogout={handleLogout} />
+      {loadedProjectId && (
+        <div className="no-print" style={{ maxWidth: 960, margin: "12px auto 0", padding: "10px 16px", background: "#fffbe6", border: "1px solid #f6e05e", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: "#744210" }}>
+          <span>
+            ✏️ Editing saved project <strong>{projectName || "(untitled)"}</strong>. Changes will overwrite the saved copy when you click Update.
+          </span>
+          <a href="./index.html" style={{ color: "#744210", fontWeight: 600, textDecoration: "underline", marginLeft: 16, whiteSpace: "nowrap" }}>Start new project</a>
+        </div>
+      )}
     <div id="print-area" ref={printRef} style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", maxWidth: 960, margin: "0 auto", padding: "24px 16px", color: "#1a1a2e", background: "transparent" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
@@ -843,6 +953,23 @@ function EnfuzeConfigurator({ session, profile }) {
               <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7c93" }}>{formatDate(projectDate)}</p>
             </div>
             <div className="no-print" style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button
+                onClick={saveProject}
+                disabled={saveStatus === "saving"}
+                style={{
+                  ...exportBtnStyle,
+                  background: saveStatus === "error"
+                    ? "linear-gradient(135deg, #c53030, #9b2c2c)"
+                    : saveStatus === "saved"
+                      ? "linear-gradient(135deg, #0d7c3e, #15803d)"
+                      : "linear-gradient(135deg, #4c51bf, #3c366b)",
+                  opacity: saveStatus === "saving" ? 0.6 : 1,
+                  cursor: saveStatus === "saving" ? "not-allowed" : "pointer",
+                }}
+              >
+                <span style={{ marginRight: 6 }}>💾</span>
+                {saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved!" : saveStatus === "error" ? "Failed" : (loadedProjectId ? "Update" : "Save")}
+              </button>
               <button onClick={exportPDF} style={exportBtnStyle}>
                 <span style={{ marginRight: 6 }}>📄</span> PDF
               </button>

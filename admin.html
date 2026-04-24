@@ -250,6 +250,7 @@ function AdminPanel({ session, profile }) {
             <span style={{ color: "#6b7c93", marginRight: 4 }}>
               {profile.full_name || profile.email} · <span style={{ textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, fontSize: 11, color: "#203a43" }}>{profile.role.replace("_", " ")}</span>
             </span>
+            <a href="./projects.html" style={{ ...btnSecondary, fontSize: 13, textDecoration: "none" }}>Projects</a>
             <a href="./index.html" style={{ ...btnSecondary, fontSize: 13, textDecoration: "none" }}>Configurator</a>
             <button onClick={logout} style={{ ...btnSecondary, fontSize: 13 }}>Log Out</button>
           </div>

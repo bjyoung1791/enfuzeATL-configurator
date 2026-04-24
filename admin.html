@@ -340,22 +340,29 @@ function ProductsTab({ products, onRefresh, showToast }) {
   const categories = ["Audio Streamers", "Audio Zone Amplifiers", "Power Supplies", "Speakers", "Subwoofers", "Wire & Cable", "Insect Control"];
 
   const startAdd = () => {
-    setForm({ sku: "", name: "", description: "", category: "Speakers", unit_price: "", sort_order: 0, active: true });
+    setForm({ sku: "", name: "", description: "", category: "Speakers", unit_price: "", sort_order: 0, active: true, variant_group: "", variant_color: "" });
     setAdding(true); setEditing(null);
   };
 
   const startEdit = (p) => { setForm({ ...p }); setEditing(p.id); setAdding(false); setMenuOpen(null); };
   const cancel = () => { setEditing(null); setAdding(false); setForm({}); };
 
+  const normalize = (o) => ({
+    ...o,
+    unit_price: parseFloat(o.unit_price),
+    variant_group: o.variant_group && o.variant_group.trim() ? o.variant_group.trim() : null,
+    variant_color: o.variant_color && o.variant_color.trim() ? o.variant_color.trim() : null,
+  });
+
   const saveNew = async () => {
     if (!form.sku || !form.name || !form.unit_price) return showToast("SKU, name, and price are required", "error");
-    await sb("products", { method: "POST", body: JSON.stringify({ ...form, unit_price: parseFloat(form.unit_price) }) });
+    await sb("products", { method: "POST", body: JSON.stringify(normalize(form)) });
     showToast("Product added"); cancel(); onRefresh();
   };
 
   const saveEdit = async () => {
     const { id, created_at, updated_at, ...rest } = form;
-    await sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ ...rest, unit_price: parseFloat(rest.unit_price) }) });
+    await sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(normalize(rest)) });
     showToast("Product updated"); cancel(); onRefresh();
   };
 
@@ -533,6 +540,16 @@ function ProductForm({ form, setForm, categories }) {
       <div>
         <SmallLabel>Sort Order</SmallLabel>
         <input type="number" value={form.sort_order || 0} onChange={u("sort_order")} style={inputStyle} />
+      </div>
+      <div>
+        <SmallLabel>Variant Group <span style={{ color: "#a0aec0", textTransform: "none", fontWeight: 400 }}>(optional)</span></SmallLabel>
+        <input value={form.variant_group || ""} onChange={u("variant_group")} style={inputStyle} placeholder="e.g. wall_soffit_5" />
+        <p style={{ margin: "4px 0 0", fontSize: 11, color: "#6b7c93" }}>Products sharing this key are treated as color variants of the same speaker.</p>
+      </div>
+      <div>
+        <SmallLabel>Variant Color <span style={{ color: "#a0aec0", textTransform: "none", fontWeight: 400 }}>(optional)</span></SmallLabel>
+        <input value={form.variant_color || ""} onChange={u("variant_color")} style={inputStyle} placeholder="e.g. Black, White, Brown" />
+        <p style={{ margin: "4px 0 0", fontSize: 11, color: "#6b7c93" }}>Shown in the color dropdown in the configurator.</p>
       </div>
     </div>
   );

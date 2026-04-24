@@ -67,7 +67,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/vfs_fonts.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script type="text/babel">
-const { useState, useCallback, useRef, useEffect } = React;
+const { useState, useCallback, useRef, useEffect, useMemo } = React;
 
 
 // ── SUPABASE CONNECTION ──────────────────────────────────────
@@ -302,11 +302,75 @@ const DEFAULT_CONFIG = {
 };
 
 function createAudioZone(id) {
-  return { id, wallSpeakers: 0, wallColor: "black", landscapeSpeakers: 0, subs: 0 };
+  return { id, speakerLines: [], subLines: [] };
+}
+
+// Converts a saved audio zone — whether in the old flat shape or the new
+// line-based shape — into the new shape. Idempotent.
+function migrateAudioZone(z) {
+  if (!z) return createAudioZone(1);
+  if (Array.isArray(z.speakerLines) || Array.isArray(z.subLines)) {
+    return {
+      id: z.id,
+      speakerLines: Array.isArray(z.speakerLines) ? z.speakerLines : [],
+      subLines: Array.isArray(z.subLines) ? z.subLines : [],
+    };
+  }
+  const speakerLines = [];
+  const subLines = [];
+  if (z.wallSpeakers > 0) {
+    const sku = z.wallColor === "white" ? "SPK-5-870-WH" : "SPK-5-870-BK";
+    speakerLines.push({ id: newLineId(), sku, qty: z.wallSpeakers });
+  }
+  if (z.landscapeSpeakers > 0) {
+    speakerLines.push({ id: newLineId(), sku: "SPK-BLT5-870-BR", qty: z.landscapeSpeakers });
+  }
+  if (z.subs > 0) {
+    subLines.push({ id: newLineId(), sku: "SPK-SUB10-BR", qty: z.subs });
+  }
+  return { id: z.id, speakerLines, subLines };
 }
 
 function createInsectZone(id) {
   return { id, repellers: 0 };
+}
+
+let _lineSeq = 1;
+function newLineId() { return `line_${Date.now()}_${_lineSeq++}`; }
+
+// Build grouped product options for a category. Products that share a
+// variant_group collapse into one option with a list of color variants.
+// Products with no variant_group stand alone.
+function buildProductOptions(products, category) {
+  const groups = new Map(); // groupKey -> { key, label, variants: [{sku, color, sortKey}] }
+  Object.entries(products).forEach(([sku, p]) => {
+    if (!p || p.category !== category) return;
+    const key = p.variant_group || ("__sku__:" + sku);
+    if (!groups.has(key)) {
+      // Strip a trailing "(Color)" or " - Color" from the name for the group label.
+      const baseLabel = p.name
+        .replace(/\s*\([^)]*\)\s*$/, "")
+        .replace(/\s*[-—]\s*(black|white|brown|tan|beige|grey|gray|silver|bronze)\s*$/i, "")
+        .trim() || p.name;
+      groups.set(key, { key, label: baseLabel, variants: [] });
+    }
+    groups.get(key).variants.push({ sku, color: p.variant_color || "", name: p.name });
+  });
+  // Sort variants within a group alphabetically by color (then sku as tiebreaker)
+  const list = Array.from(groups.values());
+  list.forEach((g) => g.variants.sort((a, b) => (a.color || "").localeCompare(b.color || "") || a.sku.localeCompare(b.sku)));
+  // Sort groups alphabetically by label
+  list.sort((a, b) => a.label.localeCompare(b.label));
+  return list;
+}
+
+// Given a line (sku + qty) and the options list, figure out which group
+// it belongs to and whether a color picker should be shown.
+function resolveLineGroup(line, options) {
+  for (const g of options) {
+    if (g.variants.some((v) => v.sku === line.sku)) return g;
+  }
+  return null;
 }
 
 function EnfuzeConfigurator({ session, profile }) {
@@ -341,10 +405,16 @@ function EnfuzeConfigurator({ session, profile }) {
           logoDark: brandMap.company_logo_dark || "",
         });
 
-        // Build products lookup { sku: { name, price, category } }
+        // Build products lookup { sku: { name, price, category, variant_group, variant_color } }
         const prodMap = {};
         (productsRaw || []).forEach((p) => {
-          prodMap[p.sku] = { name: p.name, price: parseFloat(p.unit_price), category: p.category };
+          prodMap[p.sku] = {
+            name: p.name,
+            price: parseFloat(p.unit_price),
+            category: p.category,
+            variant_group: p.variant_group || null,
+            variant_color: p.variant_color || null,
+          };
         });
         setProducts(prodMap);
 
@@ -403,7 +473,7 @@ function EnfuzeConfigurator({ session, profile }) {
         setCustomerEmail(p.customer_email || "");
         setCustomerPhone(p.customer_phone || "");
         setServiceType(s.serviceType || "");
-        setAudioZones(Array.isArray(s.audioZones) ? s.audioZones : []);
+        setAudioZones(Array.isArray(s.audioZones) ? s.audioZones.map(migrateAudioZone) : []);
         setInsectZones(Array.isArray(s.insectZones) ? s.insectZones : []);
         setExtraCable10(s.extraCable10 || 0);
         setExtraCable24(s.extraCable24 || 0);
@@ -488,26 +558,65 @@ function EnfuzeConfigurator({ session, profile }) {
     });
   };
 
-  const updateAudioZone = (index, field, value) => {
+  const sumLineQty = (lines) => (lines || []).reduce((s, l) => s + (Number(l.qty) || 0), 0);
+
+  const setZoneLines = (index, key, lines, opts = {}) => {
+    setAudioZones((prev) => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [key]: lines };
+      return updated;
+    });
+  };
+
+  const addSpeakerLine = (index, sku, category) => {
     setAudioZones((prev) => {
       const updated = [...prev];
       const zone = { ...updated[index] };
-      const numVal = typeof value === "string" && field !== "wallColor" ? Math.max(0, parseInt(value) || 0) : value;
-
-      if (field === "wallSpeakers" || field === "landscapeSpeakers") {
-        const otherField = field === "wallSpeakers" ? "landscapeSpeakers" : "wallSpeakers";
-        const totalSpeakers = numVal + zone[otherField];
-        if (totalSpeakers > CONFIG.max_speakers_per_zone) {
-          setWarning({ title: "Speaker Limit Exceeded", message: `Zone ${index + 1}: Total speakers (${totalSpeakers}) exceeds the maximum of ${CONFIG.max_speakers_per_zone} per zone. To add more speakers, please add another audio zone.` });
-          return prev;
-        }
-      }
-      if (field === "subs" && numVal > CONFIG.max_subs_per_zone) {
-        setWarning({ title: "Subwoofer Limit Exceeded", message: `Zone ${index + 1}: Subwoofers (${numVal}) exceeds the maximum of ${CONFIG.max_subs_per_zone} per zone. To add more subs, please add another audio zone.` });
+      const key = category === "Subwoofers" ? "subLines" : "speakerLines";
+      const lines = [...(zone[key] || []), { id: newLineId(), sku, qty: 1 }];
+      const cap = category === "Subwoofers" ? CONFIG.max_subs_per_zone : CONFIG.max_speakers_per_zone;
+      const total = sumLineQty(lines);
+      if (total > cap) {
+        setWarning({
+          title: category === "Subwoofers" ? "Subwoofer Limit Exceeded" : "Speaker Limit Exceeded",
+          message: `Zone ${index + 1}: Total ${category === "Subwoofers" ? "subwoofers" : "speakers"} (${total}) exceeds the maximum of ${cap} per zone. Add another audio zone to keep going.`,
+        });
         return prev;
       }
-      zone[field] = numVal;
+      zone[key] = lines;
       updated[index] = zone;
+      return updated;
+    });
+  };
+
+  const updateLine = (zoneIndex, category, lineId, patch) => {
+    setAudioZones((prev) => {
+      const updated = [...prev];
+      const zone = { ...updated[zoneIndex] };
+      const key = category === "Subwoofers" ? "subLines" : "speakerLines";
+      const lines = (zone[key] || []).map((l) => (l.id === lineId ? { ...l, ...patch } : l));
+      const cap = category === "Subwoofers" ? CONFIG.max_subs_per_zone : CONFIG.max_speakers_per_zone;
+      const total = sumLineQty(lines);
+      if (total > cap) {
+        setWarning({
+          title: category === "Subwoofers" ? "Subwoofer Limit Exceeded" : "Speaker Limit Exceeded",
+          message: `Zone ${zoneIndex + 1}: Total ${category === "Subwoofers" ? "subwoofers" : "speakers"} (${total}) exceeds the maximum of ${cap} per zone.`,
+        });
+        return prev;
+      }
+      zone[key] = lines;
+      updated[zoneIndex] = zone;
+      return updated;
+    });
+  };
+
+  const removeLine = (zoneIndex, category, lineId) => {
+    setAudioZones((prev) => {
+      const updated = [...prev];
+      const zone = { ...updated[zoneIndex] };
+      const key = category === "Subwoofers" ? "subLines" : "speakerLines";
+      zone[key] = (zone[key] || []).filter((l) => l.id !== lineId);
+      updated[zoneIndex] = zone;
       return updated;
     });
   };
@@ -528,6 +637,9 @@ function EnfuzeConfigurator({ session, profile }) {
   };
 
   // Calculate line items
+  const speakerOptions = useMemo(() => buildProductOptions(PRODUCTS, "Speakers"), [PRODUCTS]);
+  const subOptions = useMemo(() => buildProductOptions(PRODUCTS, "Subwoofers"), [PRODUCTS]);
+
   const calculateQuote = useCallback(() => {
     const itemMap = new Map();
     let totalSpeakerSubPoints = 0;
@@ -545,8 +657,11 @@ function EnfuzeConfigurator({ session, profile }) {
 
     // Audio zones
     audioZones.forEach((zone) => {
-      const totalSpeakers = zone.wallSpeakers + zone.landscapeSpeakers;
-      if (totalSpeakers === 0 && zone.subs === 0) return;
+      const speakerLines = zone.speakerLines || [];
+      const subLines = zone.subLines || [];
+      const totalSpeakers = speakerLines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+      const totalSubs = subLines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+      if (totalSpeakers === 0 && totalSubs === 0) return;
 
       totalAudioZones++;
       const ampSku = (forcePlusAmp || totalSpeakers > CONFIG.amp_upgrade_threshold) ? CONFIG.plus_amp_sku : CONFIG.standard_amp_sku;
@@ -555,13 +670,9 @@ function EnfuzeConfigurator({ session, profile }) {
       addItem(ampSku, 1);
       addItem("PS-120-12VAC-300", 1);
 
-      if (zone.wallSpeakers > 0) {
-        const spkSku = zone.wallColor === "black" ? "SPK-5-870-BK" : "SPK-5-870-WH";
-        addItem(spkSku, zone.wallSpeakers);
-      }
-      addItem("SPK-BLT5-870-BR", zone.landscapeSpeakers);
-      addItem("SPK-SUB10-BR", zone.subs);
-      totalSpeakerSubPoints += zone.wallSpeakers + zone.landscapeSpeakers + zone.subs;
+      speakerLines.forEach((l) => { if (l.sku && Number(l.qty) > 0) addItem(l.sku, Number(l.qty)); });
+      subLines.forEach((l) => { if (l.sku && Number(l.qty) > 0) addItem(l.sku, Number(l.qty)); });
+      totalSpeakerSubPoints += totalSpeakers + totalSubs;
     });
 
     // Insect zones
@@ -1260,37 +1371,52 @@ function EnfuzeConfigurator({ session, profile }) {
             <Label>Number of Audio Zones</Label>
             <NumberInput value={audioZones.length} onChange={(v) => setAudioZoneCount(v)} min={1} max={10} />
           </div>
-          {audioZones.map((zone, i) => (
-            <div key={zone.id} style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, marginBottom: 16, border: "1px solid #dce3ed" }}>
-              <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>
-                Audio Zone {i + 1}
-                <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93", marginLeft: 8 }}>
-                  ({(forcePlusAmp || (zone.wallSpeakers + zone.landscapeSpeakers) > CONFIG.amp_upgrade_threshold) ? "Plus Amp" : "Standard Amp"} • {zone.wallSpeakers + zone.landscapeSpeakers}/{CONFIG.max_speakers_per_zone} speakers)
-                </span>
-              </h3>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-                <div>
-                  <Label>Wall/Soffit Speakers</Label>
-                  <NumberInput value={zone.wallSpeakers} onChange={(v) => updateAudioZone(i, "wallSpeakers", v)} min={0} max={CONFIG.max_speakers_per_zone} />
-                </div>
-                <div>
-                  <Label>Speaker Color</Label>
-                  <select value={zone.wallColor} onChange={(e) => updateAudioZone(i, "wallColor", e.target.value)} style={selectStyle}>
-                    <option value="black">Black</option>
-                    <option value="white">White</option>
-                  </select>
-                </div>
-                <div>
-                  <Label>Landscape Speakers</Label>
-                  <NumberInput value={zone.landscapeSpeakers} onChange={(v) => updateAudioZone(i, "landscapeSpeakers", v)} min={0} max={CONFIG.max_speakers_per_zone} />
-                </div>
-                <div>
-                  <Label>Subwoofers</Label>
-                  <NumberInput value={zone.subs} onChange={(v) => updateAudioZone(i, "subs", v)} min={0} max={CONFIG.max_subs_per_zone} />
+          {audioZones.map((zone, i) => {
+            const speakerLines = zone.speakerLines || [];
+            const subLines = zone.subLines || [];
+            const speakerTotal = sumLineQty(speakerLines);
+            const subTotal = sumLineQty(subLines);
+            return (
+              <div key={zone.id} style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, marginBottom: 16, border: "1px solid #dce3ed" }}>
+                <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>
+                  Audio Zone {i + 1}
+                  <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93", marginLeft: 8 }}>
+                    ({(forcePlusAmp || speakerTotal > CONFIG.amp_upgrade_threshold) ? "Plus Amp" : "Standard Amp"} • {speakerTotal}/{CONFIG.max_speakers_per_zone} speakers{subTotal > 0 ? ` • ${subTotal}/${CONFIG.max_subs_per_zone} subs` : ""})
+                  </span>
+                </h3>
+
+                <LineSection
+                  title="Speakers"
+                  lines={speakerLines}
+                  options={speakerOptions}
+                  onAdd={(sku) => addSpeakerLine(i, sku, "Speakers")}
+                  onChange={(lineId, patch) => updateLine(i, "Speakers", lineId, patch)}
+                  onRemove={(lineId) => removeLine(i, "Speakers", lineId)}
+                  cap={CONFIG.max_speakers_per_zone}
+                  total={speakerTotal}
+                  PRODUCTS={PRODUCTS}
+                  emptyHint="No speakers in this zone yet."
+                  addLabel="+ Add Speaker"
+                />
+
+                <div style={{ marginTop: 16 }}>
+                  <LineSection
+                    title="Subwoofers"
+                    lines={subLines}
+                    options={subOptions}
+                    onAdd={(sku) => addSpeakerLine(i, sku, "Subwoofers")}
+                    onChange={(lineId, patch) => updateLine(i, "Subwoofers", lineId, patch)}
+                    onRemove={(lineId) => removeLine(i, "Subwoofers", lineId)}
+                    cap={CONFIG.max_subs_per_zone}
+                    total={subTotal}
+                    PRODUCTS={PRODUCTS}
+                    emptyHint="No subwoofers in this zone."
+                    addLabel="+ Add Subwoofer"
+                  />
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, border: "1px solid #dce3ed" }}>
             <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>Wire & Cable (Optional)</h3>
             <p style={{ margin: "0 0 16px", fontSize: 13, color: "#6b7c93" }}>500ft spools — select the quantity of spools needed for the job.</p>
@@ -1527,6 +1653,98 @@ function EnfuzeConfigurator({ session, profile }) {
 }
 
 /* --- Sub-components --- */
+
+function LineSection({ title, lines, options, onAdd, onChange, onRemove, cap, total, PRODUCTS, emptyHint, addLabel }) {
+  const noOptions = options.length === 0;
+  const defaultSku = noOptions ? "" : options[0].variants[0].sku;
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <Label>{title}</Label>
+        <span style={{ fontSize: 11, color: total > cap ? "#e53e3e" : "#6b7c93", fontWeight: 600 }}>
+          {total}/{cap}
+        </span>
+      </div>
+      {lines.length === 0 ? (
+        <div style={{ fontSize: 13, color: "#6b7c93", padding: "8px 0 12px" }}>{emptyHint}</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {lines.map((line) => (
+            <LineRow
+              key={line.id}
+              line={line}
+              options={options}
+              onChange={(patch) => onChange(line.id, patch)}
+              onRemove={() => onRemove(line.id)}
+              cap={cap}
+            />
+          ))}
+        </div>
+      )}
+      <button
+        onClick={() => defaultSku && onAdd(defaultSku)}
+        disabled={noOptions}
+        style={{
+          marginTop: 10,
+          background: "#fff",
+          border: "2px dashed #cbd5e0",
+          color: "#203a43",
+          padding: "10px 16px",
+          borderRadius: 8,
+          fontSize: 13,
+          fontWeight: 600,
+          cursor: noOptions ? "not-allowed" : "pointer",
+          fontFamily: "inherit",
+          width: "100%",
+          opacity: noOptions ? 0.5 : 1,
+        }}
+      >
+        {noOptions ? `No ${title.toLowerCase()} in the catalog` : addLabel}
+      </button>
+    </div>
+  );
+}
+
+function LineRow({ line, options, onChange, onRemove, cap }) {
+  const group = resolveLineGroup(line, options);
+  const hasColors = !!group && group.variants.length > 1;
+  const groupKey = group ? group.key : (line.sku ? ("__sku__:" + line.sku) : "");
+
+  const onTypeChange = (newKey) => {
+    const newGroup = options.find((o) => o.key === newKey);
+    if (!newGroup) return;
+    // Preserve color preference if the new group has a matching color variant.
+    const currentColor = (group && group.variants.find((v) => v.sku === line.sku)?.color) || "";
+    const match = newGroup.variants.find((v) => v.color === currentColor) || newGroup.variants[0];
+    onChange({ sku: match.sku });
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: hasColors ? "1fr 120px 140px 36px" : "1fr 140px 36px", gap: 8, alignItems: "center" }}>
+      <select value={groupKey} onChange={(e) => onTypeChange(e.target.value)} style={{ ...selectStyle, padding: "10px 12px", fontSize: 14 }}>
+        {!group && line.sku && <option value={groupKey}>{line.sku}</option>}
+        {options.map((o) => (
+          <option key={o.key} value={o.key}>{o.label}</option>
+        ))}
+      </select>
+      {hasColors && (
+        <select value={line.sku} onChange={(e) => onChange({ sku: e.target.value })} style={{ ...selectStyle, padding: "10px 12px", fontSize: 14 }}>
+          {group.variants.map((v) => (
+            <option key={v.sku} value={v.sku}>{v.color || "—"}</option>
+          ))}
+        </select>
+      )}
+      <NumberInput value={line.qty || 0} onChange={(v) => onChange({ qty: v })} min={0} max={cap} />
+      <button
+        onClick={onRemove}
+        title="Remove line"
+        style={{ background: "#fff", border: "1px solid #fed7d7", color: "#e53e3e", width: 36, height: 36, borderRadius: 8, fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center" }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
 
 function Card({ title, children }) {
   return (

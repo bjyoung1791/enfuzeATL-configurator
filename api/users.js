@@ -31,14 +31,21 @@ export default async function handler(req, res) {
     });
     if (createErr) return res.status(400).json({ error: createErr.message });
 
-    const { error: profileErr } = await admin.from("profiles").insert({
-      id: created.user.id,
-      email,
-      full_name: full_name || null,
-      role,
-      must_change_password: true,
-      active: true,
-    });
+    // A DB trigger on auth.users creates a default profile automatically,
+    // so here we upsert the admin-chosen role and name on top of whatever
+    // the trigger wrote. Upsert avoids the duplicate-key error if the
+    // trigger row already exists, and still works if for any reason it
+    // didn't fire.
+    const { error: profileErr } = await admin
+      .from("profiles")
+      .upsert({
+        id: created.user.id,
+        email,
+        full_name: full_name || null,
+        role,
+        must_change_password: true,
+        active: true,
+      }, { onConflict: "id" });
     if (profileErr) {
       await admin.auth.admin.deleteUser(created.user.id).catch(() => {});
       return res.status(500).json({ error: profileErr.message });

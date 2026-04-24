@@ -18,32 +18,185 @@
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script type="text/babel">
 const { useState, useEffect, useCallback } = React;
 
 
 // ── SUPABASE CONNECTION ──────────────────────────────────────
-// Replace these with your Supabase project values
 const SUPABASE_URL = "https://mkjcfffswfbfezoxjxtt.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_yIoEW1BIUeWbBdpsrl9PQQ_OlmYTElP";
 
-const sb = (endpoint, options = {}) =>
-  fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storage: window.localStorage, storageKey: "enfuze-auth" },
+});
+
+async function getAuthHeaders() {
+  const { data: { session } } = await supa.auth.getSession();
+  const token = session?.access_token || SUPABASE_ANON_KEY;
+  return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` };
+}
+
+const sb = async (endpoint, options = {}) => {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+    ...options,
     headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      ...headers,
       "Content-Type": "application/json",
       Prefer: options.prefer || "return=representation",
       ...(options.headers || {}),
     },
-    ...options,
-  }).then((r) => r.json());
+  });
+  if (res.status === 204) return null;
+  return res.json();
+};
 
-// ── MAIN APP ─────────────────────────────────────────────────
-function AdminPanel() {
-  const [authenticated, setAuthenticated] = useState(false);
-  const [passwordInput, setPasswordInput] = useState("");
-  const [error, setError] = useState("");
+// POST/PATCH/DELETE to our /api with the user's access token
+async function apiCall(path, options = {}) {
+  const { data: { session } } = await supa.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error("Not signed in");
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
+    },
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json?.error || `Request failed (${res.status})`);
+  return json;
+}
+
+// ── AUTH SHELL ───────────────────────────────────────────────
+function App() {
+  const [status, setStatus] = useState("checking"); // checking | login | forbidden | ready
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [err, setErr] = useState("");
+
+  const loadProfile = useCallback(async (s) => {
+    if (!s) { setProfile(null); setStatus("login"); return; }
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${s.user.id}&select=*`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${s.access_token}` },
+      });
+      const rows = await res.json();
+      const p = rows?.[0];
+      if (!p) { setErr("No profile found."); await supa.auth.signOut(); setStatus("login"); return; }
+      if (p.active === false) { setErr("Account deactivated."); await supa.auth.signOut(); setStatus("login"); return; }
+      setProfile(p);
+      if (p.role !== "admin") { setStatus("forbidden"); return; }
+      if (p.must_change_password) { window.location.href = "./index.html"; return; }
+      setStatus("ready");
+    } catch (e) {
+      setErr("Failed to load profile.");
+      setStatus("login");
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    supa.auth.getSession().then(({ data: { session: s } }) => {
+      if (!mounted) return;
+      setSession(s);
+      loadProfile(s);
+    });
+    const { data: sub } = supa.auth.onAuthStateChange((_e, s) => {
+      if (!mounted) return;
+      setSession(s);
+      if (s) loadProfile(s);
+      else { setProfile(null); setStatus("login"); }
+    });
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
+  }, [loadProfile]);
+
+  if (status === "checking") {
+    return (
+      <Shell>
+        <div style={{ textAlign: "center", padding: 80, color: "#6b7c93", fontSize: 14 }}>Loading...</div>
+      </Shell>
+    );
+  }
+
+  if (status === "login") return <AdminLogin error={err} onClearError={() => setErr("")} />;
+  if (status === "forbidden") return <ForbiddenScreen profile={profile} />;
+  return <AdminPanel session={session} profile={profile} />;
+}
+
+function AdminLogin({ error, onClearError }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState(error || "");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (error) setErr(error); }, [error]);
+
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    setErr(""); onClearError?.();
+    setBusy(true);
+    const { error: e2 } = await supa.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (e2) setErr(e2.message || "Login failed");
+  };
+
+  return (
+    <Shell>
+      <div style={{ maxWidth: 420, margin: "80px auto", padding: 16 }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16 }}>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Enfuze Admin</h1>
+          </div>
+        </div>
+        <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: 32, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #e2e8f0" }}>
+          <p style={{ margin: "0 0 20px", fontSize: 13, color: "#6b7c93" }}>Sign in with your admin account.</p>
+          <div style={{ marginBottom: 12 }}>
+            <SmallLabel>Email</SmallLabel>
+            <input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} required />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <SmallLabel>Password</SmallLabel>
+            <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} required />
+          </div>
+          {err && <p style={{ color: "#e53e3e", fontSize: 13, margin: "0 0 12px" }}>{err}</p>}
+          <button type="submit" disabled={busy} style={{ ...btnPrimary, width: "100%", opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Signing in..." : "Sign In"}
+          </button>
+          <a href="./index.html" style={{ display: "block", textAlign: "center", marginTop: 12, fontSize: 13, color: "#6b7c93", textDecoration: "none" }}>← Back to configurator</a>
+        </form>
+      </div>
+    </Shell>
+  );
+}
+
+function ForbiddenScreen({ profile }) {
+  const logout = async () => { await supa.auth.signOut(); };
+  return (
+    <Shell>
+      <div style={{ maxWidth: 480, margin: "120px auto", padding: 16, textAlign: "center" }}>
+        <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16, marginBottom: 24 }}>
+          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Enfuze Admin</h1>
+        </div>
+        <div style={{ background: "#fff", borderRadius: 16, padding: 32, border: "1px solid #e2e8f0" }}>
+          <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: "#1a1a2e" }}>Access restricted</h2>
+          <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7c93" }}>
+            The admin panel is only available to accounts with the admin role. You're signed in as {profile?.email}
+            {profile?.role ? ` (${profile.role.replace("_", " ")})` : ""}.
+          </p>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+            <a href="./index.html" style={{ ...btnSecondary, textDecoration: "none" }}>← Back to configurator</a>
+            <button onClick={logout} style={btnPrimary}>Sign out</button>
+          </div>
+        </div>
+      </div>
+    </Shell>
+  );
+}
+
+// ── ADMIN PANEL ──────────────────────────────────────────────
+function AdminPanel({ session, profile }) {
   const [activeTab, setActiveTab] = useState("products");
   const [products, setProducts] = useState([]);
   const [installRates, setInstallRates] = useState([]);
@@ -56,19 +209,7 @@ function AdminPanel() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleLogin = async () => {
-    setError("");
-    try {
-      const data = await sb("admin_settings?setting_key=eq.admin_password&select=setting_value");
-      if (data?.[0]?.setting_value === passwordInput) {
-        setAuthenticated(true);
-      } else {
-        setError("Incorrect password");
-      }
-    } catch {
-      setError("Could not connect to Supabase. Check your URL and key.");
-    }
-  };
+  const logout = async () => { await supa.auth.signOut(); };
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -87,39 +228,13 @@ function AdminPanel() {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    if (authenticated) fetchAll();
-  }, [authenticated, fetchAll]);
-
-  if (!authenticated) {
-    return (
-      <Shell>
-        <div style={{ maxWidth: 400, margin: "120px auto", textAlign: "center" }}>
-          <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16, marginBottom: 32 }}>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Enfuze Admin</h1>
-          </div>
-          <div style={{ background: "#fff", borderRadius: 16, padding: 32, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #e2e8f0" }}>
-            <p style={{ margin: "0 0 20px", fontSize: 14, color: "#6b7c93" }}>Enter admin password to continue</p>
-            <input
-              type="password"
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-              placeholder="Password"
-              style={inputStyle}
-            />
-            {error && <p style={{ color: "#e53e3e", fontSize: 13, margin: "8px 0 0" }}>{error}</p>}
-            <button onClick={handleLogin} style={{ ...btnPrimary, width: "100%", marginTop: 16 }}>Sign In</button>
-          </div>
-        </div>
-      </Shell>
-    );
-  }
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
   const tabs = [
     { key: "products", label: "Products" },
     { key: "rates", label: "Install Rates" },
     { key: "config", label: "Zone Logic" },
+    { key: "users", label: "Users" },
     { key: "settings", label: "Settings" },
   ];
 
@@ -127,11 +242,17 @@ function AdminPanel() {
     <Shell>
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
         {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
           <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "12px 28px", borderRadius: 12 }}>
             <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#fff" }}>Enfuze Admin</h1>
           </div>
-          <button onClick={() => setAuthenticated(false)} style={{ ...btnSecondary, fontSize: 13 }}>Log Out</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <span style={{ color: "#6b7c93", marginRight: 4 }}>
+              {profile.full_name || profile.email} · <span style={{ textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, fontSize: 11, color: "#203a43" }}>{profile.role.replace("_", " ")}</span>
+            </span>
+            <a href="./index.html" style={{ ...btnSecondary, fontSize: 13, textDecoration: "none" }}>Configurator</a>
+            <button onClick={logout} style={{ ...btnSecondary, fontSize: 13 }}>Log Out</button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -156,6 +277,7 @@ function AdminPanel() {
             {activeTab === "products" && <ProductsTab products={products} onRefresh={fetchAll} showToast={showToast} />}
             {activeTab === "rates" && <RatesTab rates={installRates} onRefresh={fetchAll} showToast={showToast} />}
             {activeTab === "config" && <ConfigTab config={installConfig} onRefresh={fetchAll} showToast={showToast} />}
+            {activeTab === "users" && <UsersTab currentUserId={session.user.id} showToast={showToast} />}
             {activeTab === "settings" && <SettingsTab config={installConfig} onRefresh={fetchAll} showToast={showToast} />}
           </>
         )}
@@ -540,10 +662,229 @@ function ConfigTab({ config, onRefresh, showToast }) {
   );
 }
 
+// ── USERS TAB ────────────────────────────────────────────────
+function UsersTab({ currentUserId, showToast }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ email: "", password: "", full_name: "", role: "designer" });
+  const [editing, setEditing] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [resetFor, setResetFor] = useState(null);
+  const [resetPw, setResetPw] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await apiCall("/api/users", { method: "GET" });
+      setUsers(data.users || []);
+    } catch (e) { showToast(e.message, "error"); }
+    setLoading(false);
+  }, [showToast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const startAdd = () => {
+    setForm({ email: "", password: "", full_name: "", role: "designer" });
+    setAdding(true); setEditing(null);
+  };
+  const cancelAdd = () => setAdding(false);
+
+  const saveNew = async () => {
+    if (!form.email || !form.password) return showToast("Email and password required", "error");
+    try {
+      await apiCall("/api/users", { method: "POST", body: JSON.stringify(form) });
+      showToast("User created");
+      setAdding(false);
+      load();
+    } catch (e) { showToast(e.message, "error"); }
+  };
+
+  const startEdit = (u) => {
+    setEditForm({ role: u.role, full_name: u.full_name || "", active: u.active });
+    setEditing(u.id);
+    setAdding(false);
+  };
+  const cancelEdit = () => { setEditing(null); setEditForm({}); };
+
+  const saveEdit = async (u) => {
+    try {
+      await apiCall("/api/users", {
+        method: "PATCH",
+        body: JSON.stringify({ id: u.id, action: "update_profile", ...editForm }),
+      });
+      showToast("User updated");
+      cancelEdit();
+      load();
+    } catch (e) { showToast(e.message, "error"); }
+  };
+
+  const submitReset = async () => {
+    if (!resetPw || resetPw.length < 8) return showToast("Password must be at least 8 characters", "error");
+    try {
+      await apiCall("/api/users", {
+        method: "PATCH",
+        body: JSON.stringify({ id: resetFor.id, action: "reset_password", password: resetPw }),
+      });
+      showToast("Password reset — user will set a new one on next sign-in");
+      setResetFor(null); setResetPw("");
+    } catch (e) { showToast(e.message, "error"); }
+  };
+
+  const doDelete = async (u) => {
+    try {
+      await apiCall("/api/users", { method: "DELETE", body: JSON.stringify({ id: u.id }) });
+      showToast("User deleted");
+      setConfirmDelete(null);
+      load();
+    } catch (e) { showToast(e.message, "error"); }
+  };
+
+  const roleLabel = { admin: "Admin", lead_designer: "Lead Designer", designer: "Designer" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#0f2027" }}>Users ({users.length})</h2>
+        <button onClick={startAdd} style={btnPrimary}>+ Add User</button>
+      </div>
+
+      {adding && (
+        <div style={formCard}>
+          <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>New User</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <SmallLabel>Email</SmallLabel>
+              <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} style={inputStyle} />
+            </div>
+            <div>
+              <SmallLabel>Full Name</SmallLabel>
+              <input value={form.full_name} onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))} style={inputStyle} />
+            </div>
+            <div>
+              <SmallLabel>Temporary Password</SmallLabel>
+              <input type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} style={inputStyle} />
+              <p style={{ margin: "4px 0 0", fontSize: 11, color: "#6b7c93" }}>Min 8 chars. User will change it on first sign-in.</p>
+            </div>
+            <div>
+              <SmallLabel>Role</SmallLabel>
+              <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))} style={inputStyle}>
+                <option value="designer">Designer</option>
+                <option value="lead_designer">Lead Designer</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={saveNew} style={btnPrimary}>Create</button>
+            <button onClick={cancelAdd} style={btnSecondary}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <p style={{ textAlign: "center", color: "#6b7c93", padding: 40 }}>Loading users...</p>
+      ) : (
+        <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "#f7f9fb" }}>
+                <th style={thAdmin}>Email</th>
+                <th style={thAdmin}>Full Name</th>
+                <th style={thAdmin}>Role</th>
+                <th style={{ ...thAdmin, textAlign: "center" }}>Active</th>
+                <th style={{ ...thAdmin, textAlign: "center" }}>Must Change PW</th>
+                <th style={{ ...thAdmin, textAlign: "right", width: 260 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) =>
+                editing === u.id ? (
+                  <tr key={u.id} style={{ background: "#fffbeb" }}>
+                    <td style={tdAdmin}>{u.email}</td>
+                    <td style={tdAdmin}>
+                      <input value={editForm.full_name || ""} onChange={(e) => setEditForm((f) => ({ ...f, full_name: e.target.value }))} style={{ ...inputStyle, fontSize: 13 }} />
+                    </td>
+                    <td style={tdAdmin}>
+                      <select value={editForm.role} onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))} style={{ ...inputStyle, fontSize: 13 }} disabled={u.id === currentUserId}>
+                        <option value="designer">Designer</option>
+                        <option value="lead_designer">Lead Designer</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    </td>
+                    <td style={{ ...tdAdmin, textAlign: "center" }}>
+                      <input type="checkbox" checked={editForm.active} onChange={(e) => setEditForm((f) => ({ ...f, active: e.target.checked }))} disabled={u.id === currentUserId} />
+                    </td>
+                    <td style={{ ...tdAdmin, textAlign: "center", color: "#6b7c93" }}>{u.must_change_password ? "Yes" : "No"}</td>
+                    <td style={{ ...tdAdmin, textAlign: "right" }}>
+                      <button onClick={() => saveEdit(u)} style={btnSmall}>Save</button>
+                      <button onClick={cancelEdit} style={{ ...btnSmall, marginLeft: 4 }}>Cancel</button>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={u.id} style={{ borderTop: "1px solid #edf2f7", opacity: u.active ? 1 : 0.5 }}>
+                    <td style={tdAdmin}>{u.email}{u.id === currentUserId && <span style={{ fontSize: 11, color: "#6b7c93", marginLeft: 6 }}>(you)</span>}</td>
+                    <td style={tdAdmin}>{u.full_name || "—"}</td>
+                    <td style={tdAdmin}>{roleLabel[u.role] || u.role}</td>
+                    <td style={{ ...tdAdmin, textAlign: "center" }}>
+                      <span style={{ color: u.active ? "#38a169" : "#e53e3e", fontWeight: 600 }}>{u.active ? "Yes" : "No"}</span>
+                    </td>
+                    <td style={{ ...tdAdmin, textAlign: "center", color: "#6b7c93" }}>{u.must_change_password ? "Yes" : "No"}</td>
+                    <td style={{ ...tdAdmin, textAlign: "right" }}>
+                      <button onClick={() => startEdit(u)} style={btnSmall}>Edit</button>
+                      <button onClick={() => { setResetFor(u); setResetPw(""); }} style={{ ...btnSmall, marginLeft: 4 }}>Reset PW</button>
+                      <button onClick={() => setConfirmDelete(u)} style={{ ...btnSmall, marginLeft: 4, color: "#e53e3e" }} disabled={u.id === currentUserId}>Delete</button>
+                    </td>
+                  </tr>
+                )
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Reset password modal */}
+      {resetFor && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(15,32,39,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 48px rgba(0,0,0,0.2)" }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700 }}>Reset password</h3>
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: "#6b7c93" }}>
+              Set a temporary password for <strong>{resetFor.email}</strong>. They'll be forced to change it on next sign-in.
+            </p>
+            <SmallLabel>Temporary Password</SmallLabel>
+            <input type="text" value={resetPw} onChange={(e) => setResetPw(e.target.value)} style={inputStyle} autoFocus />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+              <button onClick={() => { setResetFor(null); setResetPw(""); }} style={btnSecondary}>Cancel</button>
+              <button onClick={submitReset} style={btnPrimary}>Reset</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirm */}
+      {confirmDelete && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(15,32,39,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 48px rgba(0,0,0,0.2)", textAlign: "center" }}>
+            <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#fed7d7", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 28 }}>🗑️</div>
+            <h3 style={{ margin: "0 0 8px", fontSize: 20, fontWeight: 700 }}>Delete user</h3>
+            <p style={{ margin: "0 0 8px", fontSize: 14, color: "#4a5568" }}>
+              Permanently delete <strong>{confirmDelete.email}</strong>?
+            </p>
+            <p style={{ margin: "0 0 24px", fontSize: 13, color: "#e53e3e", fontWeight: 600 }}>This cannot be undone.</p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <button onClick={() => setConfirmDelete(null)} style={btnSecondary}>Cancel</button>
+              <button onClick={() => doDelete(confirmDelete)} style={{ ...btnPrimary, background: "#e53e3e" }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SETTINGS TAB ─────────────────────────────────────────────
 function SettingsTab({ config = [], onRefresh, showToast }) {
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientLoaded, setRecipientLoaded] = useState(false);
 
@@ -571,15 +912,6 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
       });
     }
     showToast("Quote recipient updated");
-  };
-
-  const changePassword = async () => {
-    if (!newPassword || newPassword.length < 6) return showToast("Password must be at least 6 characters", "error");
-    if (newPassword !== confirmPassword) return showToast("Passwords don't match", "error");
-    await sb("admin_settings?setting_key=eq.admin_password", { method: "PATCH", body: JSON.stringify({ setting_value: newPassword }) });
-    showToast("Password updated");
-    setNewPassword("");
-    setConfirmPassword("");
   };
 
   const isBool = (v) => v === "true" || v === "false";
@@ -642,17 +974,11 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
         </div>
       </div>
 
-      <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 400 }}>
-        <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600 }}>Change Admin Password</h3>
-        <div style={{ marginBottom: 12 }}>
-          <SmallLabel>New Password</SmallLabel>
-          <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={inputStyle} />
-        </div>
-        <div style={{ marginBottom: 16 }}>
-          <SmallLabel>Confirm Password</SmallLabel>
-          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} style={inputStyle} />
-        </div>
-        <button onClick={changePassword} style={btnPrimary}>Update Password</button>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 560 }}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600 }}>Account Passwords</h3>
+        <p style={{ margin: 0, fontSize: 13, color: "#6b7c93" }}>
+          Manage users and reset passwords in the <strong>Users</strong> tab. Each user changes their own password on next sign-in after an admin reset.
+        </p>
       </div>
     </div>
   );
@@ -709,7 +1035,7 @@ const menuItemStyle = {
 };
 
 
-ReactDOM.createRoot(document.getElementById("root")).render(<AdminPanel />);
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
   </script>
 </body>

@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { getCallerProfile, getAdminClient } from "./_lib/auth.js";
 
 const MAX_BASE64_BYTES = 2_000_000;
 
@@ -7,6 +8,9 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
+
+  const caller = await getCallerProfile(req);
+  if (!caller) return res.status(401).json({ error: "Not authenticated" });
 
   const { subject, body, filename, contentBase64 } = req.body || {};
 
@@ -17,20 +21,15 @@ export default async function handler(req, res) {
     return res.status(413).json({ error: "Attachment too large" });
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseKey) {
-    return res.status(500).json({ error: "Supabase env vars not configured" });
-  }
-
   let recipient;
   try {
-    const lookupRes = await fetch(
-      `${supabaseUrl}/rest/v1/admin_settings?setting_key=eq.quote_recipient_email&select=setting_value`,
-      { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
-    );
-    const lookup = await lookupRes.json();
-    recipient = lookup?.[0]?.setting_value;
+    const admin = getAdminClient();
+    const { data } = await admin
+      .from("admin_settings")
+      .select("setting_value")
+      .eq("setting_key", "quote_recipient_email")
+      .single();
+    recipient = data?.setting_value;
   } catch (e) {
     return res.status(502).json({ error: "Failed to look up recipient" });
   }

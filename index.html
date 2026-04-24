@@ -27,22 +27,227 @@
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script type="text/babel">
 const { useState, useCallback, useRef, useEffect } = React;
 
 
 // ── SUPABASE CONNECTION ──────────────────────────────────────
-// Replace these with your Supabase project values
 const SUPABASE_URL = "https://mkjcfffswfbfezoxjxtt.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_yIoEW1BIUeWbBdpsrl9PQQ_OlmYTElP";
 
-const sb = (endpoint) =>
-  fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+const supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storage: window.localStorage, storageKey: "enfuze-auth" },
+});
+
+async function getAuthHeaders() {
+  const { data: { session } } = await supa.auth.getSession();
+  const token = session?.access_token || SUPABASE_ANON_KEY;
+  return { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` };
+}
+
+const sb = async (endpoint, options = {}) => {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+    ...options,
     headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      ...headers,
+      "Content-Type": "application/json",
+      Prefer: options.prefer || "return=representation",
+      ...(options.headers || {}),
     },
-  }).then((r) => r.json());
+  });
+  if (res.status === 204) return null;
+  return res.json();
+};
+
+// ── AUTH SHELL ───────────────────────────────────────────────
+function App() {
+  const [status, setStatus] = useState("checking"); // 'checking' | 'login' | 'must_change' | 'ready'
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [loginError, setLoginError] = useState("");
+
+  const loadProfile = useCallback(async (s) => {
+    if (!s) { setProfile(null); setStatus("login"); return; }
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${s.user.id}&select=*`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${s.access_token}` },
+      });
+      const rows = await res.json();
+      const p = rows?.[0];
+      if (!p) {
+        setLoginError("No profile found for this user. Contact your admin.");
+        await supa.auth.signOut();
+        setProfile(null); setStatus("login"); return;
+      }
+      if (p.active === false) {
+        setLoginError("This account is deactivated.");
+        await supa.auth.signOut();
+        setProfile(null); setStatus("login"); return;
+      }
+      setProfile(p);
+      setStatus(p.must_change_password ? "must_change" : "ready");
+    } catch (e) {
+      setLoginError("Failed to load profile.");
+      setStatus("login");
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    supa.auth.getSession().then(({ data: { session: s } }) => {
+      if (!mounted) return;
+      setSession(s);
+      loadProfile(s);
+    });
+    const { data: sub } = supa.auth.onAuthStateChange((_event, s) => {
+      if (!mounted) return;
+      setSession(s);
+      if (s) loadProfile(s);
+      else { setProfile(null); setStatus("login"); }
+    });
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
+  }, [loadProfile]);
+
+  if (status === "checking") return <AuthSplash message="Loading..." />;
+  if (status === "login") return <LoginScreen error={loginError} onClearError={() => setLoginError("")} />;
+  if (status === "must_change") return <PasswordChangeScreen onDone={() => loadProfile(session)} />;
+  return <EnfuzeConfigurator session={session} profile={profile} />;
+}
+
+function AuthSplash({ message }) {
+  return (
+    <div style={{ fontFamily: "'DM Sans', sans-serif", maxWidth: 480, margin: "120px auto", textAlign: "center" }}>
+      <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16, marginBottom: 24 }}>
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Enfuze Atlanta</h1>
+      </div>
+      <p style={{ color: "#6b7c93", fontSize: 14 }}>{message}</p>
+    </div>
+  );
+}
+
+function LoginScreen({ error, onClearError }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState(error || "");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { if (error) setErr(error); }, [error]);
+
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    setErr(""); onClearError?.();
+    setBusy(true);
+    const { error: e2 } = await supa.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (e2) setErr(e2.message || "Login failed");
+  };
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", minHeight: "100vh", background: "#f7f9fb", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ maxWidth: 420, width: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16 }}>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Enfuze Atlanta</h1>
+            <p style={{ margin: "4px 0 0", fontSize: 12, color: "#8ec8e8", fontWeight: 500, letterSpacing: 1.5, textTransform: "uppercase" }}>Product Configurator</p>
+          </div>
+        </div>
+        <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: 32, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #e2e8f0" }}>
+          <h2 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700, color: "#1a1a2e" }}>Sign in</h2>
+          <p style={{ margin: "0 0 20px", fontSize: 13, color: "#6b7c93" }}>Enter your email and password to continue.</p>
+          <div style={{ marginBottom: 12 }}>
+            <label style={authLabel}>Email</label>
+            <input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} style={authInput} required />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={authLabel}>Password</label>
+            <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} style={authInput} required />
+          </div>
+          {err && <p style={{ color: "#e53e3e", fontSize: 13, margin: "0 0 12px" }}>{err}</p>}
+          <button type="submit" disabled={busy} style={{ ...authPrimary, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Signing in..." : "Sign In"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function PasswordChangeScreen({ onDone }) {
+  const [pw, setPw] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    setErr("");
+    if (pw.length < 8) return setErr("Password must be at least 8 characters");
+    if (pw !== confirm) return setErr("Passwords do not match");
+    setBusy(true);
+    const { error: upErr } = await supa.auth.updateUser({ password: pw });
+    if (upErr) { setBusy(false); return setErr(upErr.message); }
+    const { error: rpcErr } = await supa.rpc("clear_my_password_change_flag");
+    setBusy(false);
+    if (rpcErr) return setErr(rpcErr.message);
+    onDone?.();
+  };
+
+  const logout = async () => { await supa.auth.signOut(); };
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", minHeight: "100vh", background: "#f7f9fb", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ maxWidth: 420, width: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16 }}>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#fff" }}>Set a new password</h1>
+          </div>
+        </div>
+        <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: 32, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", border: "1px solid #e2e8f0" }}>
+          <p style={{ margin: "0 0 20px", fontSize: 13, color: "#6b7c93" }}>
+            Your administrator set a temporary password. Choose a new one to continue.
+          </p>
+          <div style={{ marginBottom: 12 }}>
+            <label style={authLabel}>New Password</label>
+            <input type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} style={authInput} required />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={authLabel}>Confirm Password</label>
+            <input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} style={authInput} required />
+          </div>
+          {err && <p style={{ color: "#e53e3e", fontSize: 13, margin: "0 0 12px" }}>{err}</p>}
+          <button type="submit" disabled={busy} style={{ ...authPrimary, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Saving..." : "Update Password"}
+          </button>
+          <button type="button" onClick={logout} style={{ ...authSecondary, marginTop: 8 }}>Cancel / Sign out</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function TopNav({ profile, onLogout }) {
+  if (!profile) return null;
+  const isAdmin = profile.role === "admin";
+  return (
+    <div className="no-print" style={{ maxWidth: 960, margin: "0 auto", padding: "16px 16px 0", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, fontSize: 13 }}>
+      <span style={{ color: "#6b7c93", marginRight: 8 }}>
+        {profile.full_name || profile.email} · <span style={{ textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, fontSize: 11, color: "#203a43" }}>{profile.role.replace("_", " ")}</span>
+      </span>
+      {isAdmin && (
+        <a href="./admin.html" style={navLinkStyle}>Admin</a>
+      )}
+      <button onClick={onLogout} style={navLinkStyle}>Log out</button>
+    </div>
+  );
+}
+
+const authLabel = { display: "block", fontSize: 12, fontWeight: 600, color: "#4a5568", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 };
+const authInput = { width: "100%", padding: "10px 12px", fontSize: 14, border: "2px solid #dce3ed", borderRadius: 8, background: "#fff", color: "#1a1a2e", fontFamily: "inherit", fontWeight: 500, outline: "none", boxSizing: "border-box" };
+const authPrimary = { width: "100%", background: "linear-gradient(135deg, #0f2027, #203a43)", color: "#fff", border: "none", padding: "12px 20px", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" };
+const authSecondary = { width: "100%", background: "#fff", color: "#203a43", border: "2px solid #dce3ed", padding: "10px 20px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" };
+const navLinkStyle = { background: "#fff", color: "#203a43", border: "2px solid #dce3ed", padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", textDecoration: "none", display: "inline-block" };
 
 // Fallback defaults in case Supabase hasn't loaded yet
 const DEFAULT_PRODUCTS = {};
@@ -65,7 +270,8 @@ function createInsectZone(id) {
   return { id, repellers: 0 };
 }
 
-function EnfuzeConfigurator() {
+function EnfuzeConfigurator({ session, profile }) {
+  const handleLogout = async () => { await supa.auth.signOut(); };
   // Data from Supabase
   const [PRODUCTS, setProducts] = useState(DEFAULT_PRODUCTS);
   const [INSTALL_RATES, setInstallRates] = useState(DEFAULT_INSTALL);
@@ -424,9 +630,13 @@ function EnfuzeConfigurator() {
         (quote.installEnabled ? `Installation Subtotal: $${quote.installTotal.toLocaleString()}\n` : "") +
         `Grand Total: $${quote.grandTotal.toLocaleString()}\n`;
 
+      const { data: { session: s } } = await supa.auth.getSession();
       const res = await fetch("/api/send-quote", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(s?.access_token ? { Authorization: `Bearer ${s.access_token}` } : {}),
+        },
         body: JSON.stringify({ subject, body, filename, contentBase64: base64 }),
       });
       const data = await res.json().catch(() => ({}));
@@ -458,6 +668,8 @@ function EnfuzeConfigurator() {
   }
 
   return (
+    <div style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", background: "#f7f9fb", minHeight: "100vh" }}>
+      <TopNav profile={profile} onLogout={handleLogout} />
     <div id="print-area" ref={printRef} style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif", maxWidth: 960, margin: "0 auto", padding: "24px 16px", color: "#1a1a2e", background: "transparent" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
@@ -759,6 +971,7 @@ function EnfuzeConfigurator() {
         </div>
       )}
     </div>
+    </div>
   );
 }
 
@@ -816,7 +1029,7 @@ const exportBtnStyle = {
 };
 
 
-ReactDOM.createRoot(document.getElementById("root")).render(<EnfuzeConfigurator />);
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
   </script>
   <script>

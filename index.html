@@ -338,39 +338,17 @@ function createInsectZone(id) {
 let _lineSeq = 1;
 function newLineId() { return `line_${Date.now()}_${_lineSeq++}`; }
 
-// Build grouped product options for a category. Products that share a
-// variant_group collapse into one option with a list of color variants.
-// Products with no variant_group stand alone.
+// Flat list of products in a category, sorted by name. Each product is
+// its own dropdown entry — color (if any) should be part of the product
+// name (e.g. "Wall Soffit Speaker (Black)", "Wall Soffit Speaker (White)").
 function buildProductOptions(products, category) {
-  const groups = new Map(); // groupKey -> { key, label, variants: [{sku, color, sortKey}] }
+  const list = [];
   Object.entries(products).forEach(([sku, p]) => {
     if (!p || p.category !== category) return;
-    const key = p.variant_group || ("__sku__:" + sku);
-    if (!groups.has(key)) {
-      // Strip a trailing "(Color)" or " - Color" from the name for the group label.
-      const baseLabel = p.name
-        .replace(/\s*\([^)]*\)\s*$/, "")
-        .replace(/\s*[-—]\s*(black|white|brown|tan|beige|grey|gray|silver|bronze)\s*$/i, "")
-        .trim() || p.name;
-      groups.set(key, { key, label: baseLabel, variants: [] });
-    }
-    groups.get(key).variants.push({ sku, color: p.variant_color || "", name: p.name });
+    list.push({ sku, label: p.name || sku });
   });
-  // Sort variants within a group alphabetically by color (then sku as tiebreaker)
-  const list = Array.from(groups.values());
-  list.forEach((g) => g.variants.sort((a, b) => (a.color || "").localeCompare(b.color || "") || a.sku.localeCompare(b.sku)));
-  // Sort groups alphabetically by label
   list.sort((a, b) => a.label.localeCompare(b.label));
   return list;
-}
-
-// Given a line (sku + qty) and the options list, figure out which group
-// it belongs to and whether a color picker should be shown.
-function resolveLineGroup(line, options) {
-  for (const g of options) {
-    if (g.variants.some((v) => v.sku === line.sku)) return g;
-  }
-  return null;
 }
 
 function EnfuzeConfigurator({ session, profile }) {
@@ -405,15 +383,13 @@ function EnfuzeConfigurator({ session, profile }) {
           logoDark: brandMap.company_logo_dark || "",
         });
 
-        // Build products lookup { sku: { name, price, category, variant_group, variant_color } }
+        // Build products lookup { sku: { name, price, category } }
         const prodMap = {};
         (productsRaw || []).forEach((p) => {
           prodMap[p.sku] = {
             name: p.name,
             price: parseFloat(p.unit_price),
             category: p.category,
-            variant_group: p.variant_group || null,
-            variant_color: p.variant_color || null,
           };
         });
         setProducts(prodMap);
@@ -1656,7 +1632,7 @@ function EnfuzeConfigurator({ session, profile }) {
 
 function LineSection({ title, lines, options, onAdd, onChange, onRemove, cap, total, PRODUCTS, emptyHint, addLabel }) {
   const noOptions = options.length === 0;
-  const defaultSku = noOptions ? "" : options[0].variants[0].sku;
+  const defaultSku = noOptions ? "" : options[0].sku;
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
@@ -1706,34 +1682,15 @@ function LineSection({ title, lines, options, onAdd, onChange, onRemove, cap, to
 }
 
 function LineRow({ line, options, onChange, onRemove, cap }) {
-  const group = resolveLineGroup(line, options);
-  const hasColors = !!group && group.variants.length > 1;
-  const groupKey = group ? group.key : (line.sku ? ("__sku__:" + line.sku) : "");
-
-  const onTypeChange = (newKey) => {
-    const newGroup = options.find((o) => o.key === newKey);
-    if (!newGroup) return;
-    // Preserve color preference if the new group has a matching color variant.
-    const currentColor = (group && group.variants.find((v) => v.sku === line.sku)?.color) || "";
-    const match = newGroup.variants.find((v) => v.color === currentColor) || newGroup.variants[0];
-    onChange({ sku: match.sku });
-  };
-
+  const knownOption = options.some((o) => o.sku === line.sku);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: hasColors ? "1fr 120px 140px 36px" : "1fr 140px 36px", gap: 8, alignItems: "center" }}>
-      <select value={groupKey} onChange={(e) => onTypeChange(e.target.value)} style={{ ...selectStyle, padding: "10px 12px", fontSize: 14 }}>
-        {!group && line.sku && <option value={groupKey}>{line.sku}</option>}
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 36px", gap: 8, alignItems: "center" }}>
+      <select value={line.sku || ""} onChange={(e) => onChange({ sku: e.target.value })} style={{ ...selectStyle, padding: "10px 12px", fontSize: 14 }}>
+        {!knownOption && line.sku && <option value={line.sku}>{line.sku} (inactive)</option>}
         {options.map((o) => (
-          <option key={o.key} value={o.key}>{o.label}</option>
+          <option key={o.sku} value={o.sku}>{o.label}</option>
         ))}
       </select>
-      {hasColors && (
-        <select value={line.sku} onChange={(e) => onChange({ sku: e.target.value })} style={{ ...selectStyle, padding: "10px 12px", fontSize: 14 }}>
-          {group.variants.map((v) => (
-            <option key={v.sku} value={v.sku}>{v.color || "—"}</option>
-          ))}
-        </select>
-      )}
       <NumberInput value={line.qty || 0} onChange={(v) => onChange({ qty: v })} min={0} max={cap} />
       <button
         onClick={onRemove}

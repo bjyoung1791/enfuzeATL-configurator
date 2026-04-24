@@ -12,13 +12,32 @@ export default async function handler(req, res) {
   const caller = await getCallerProfile(req);
   if (!caller) return res.status(401).json({ error: "Not authenticated" });
 
-  const { subject, body, filename, contentBase64 } = req.body || {};
+  const { subject, body, html, filename, contentBase64, attachments: extraAttachments, logoBase64 } = req.body || {};
 
-  if (!subject || !filename || !contentBase64) {
-    return res.status(400).json({ error: "Missing required fields: subject, filename, contentBase64" });
+  if (!subject) return res.status(400).json({ error: "Missing required field: subject" });
+
+  // Normalize into an attachments array. Accepts either the legacy
+  // { filename, contentBase64 } shape (single file) OR an attachments array
+  // of { filename, contentBase64 } objects. Both together are fine too.
+  const inputAttachments = [];
+  if (filename && contentBase64) {
+    inputAttachments.push({ filename, contentBase64 });
   }
-  if (typeof contentBase64 !== "string" || contentBase64.length > MAX_BASE64_BYTES) {
-    return res.status(413).json({ error: "Attachment too large" });
+  if (Array.isArray(extraAttachments)) {
+    for (const a of extraAttachments) {
+      if (a && a.filename && a.contentBase64) inputAttachments.push({ filename: a.filename, contentBase64: a.contentBase64 });
+    }
+  }
+  if (inputAttachments.length === 0) {
+    return res.status(400).json({ error: "At least one attachment required" });
+  }
+  for (const a of inputAttachments) {
+    if (typeof a.contentBase64 !== "string" || a.contentBase64.length > MAX_BASE64_BYTES) {
+      return res.status(413).json({ error: `Attachment "${a.filename}" too large` });
+    }
+  }
+  if (logoBase64 && (typeof logoBase64 !== "string" || logoBase64.length > 800_000)) {
+    return res.status(413).json({ error: "Logo too large" });
   }
 
   let recipient;
@@ -51,20 +70,39 @@ export default async function handler(req, res) {
 
   const fromName = process.env.GMAIL_FROM_NAME || "Enfuze Atlanta";
 
+  const attachments = inputAttachments.map((a) => ({
+    filename: a.filename,
+    content: Buffer.from(a.contentBase64, "base64"),
+  }));
+
+  // If a logo data URL was provided, attach it inline with CID "companylogo"
+  // so the HTML body can reference it via <img src="cid:companylogo">.
+  let logoCid = null;
+  if (logoBase64) {
+    const match = /^data:(image\/[^;]+);base64,(.+)$/.exec(logoBase64);
+    if (match) {
+      const mime = match[1];
+      const ext = mime.split("/")[1].split("+")[0];
+      logoCid = "companylogo";
+      attachments.push({
+        filename: "logo." + ext,
+        content: Buffer.from(match[2], "base64"),
+        cid: logoCid,
+        contentType: mime,
+      });
+    }
+  }
+
   try {
     const info = await transporter.sendMail({
       from: `"${fromName}" <${gmailUser}>`,
       to: recipient,
       subject,
-      text: body || `Attached: ${filename}`,
-      attachments: [
-        {
-          filename,
-          content: Buffer.from(contentBase64, "base64"),
-        },
-      ],
+      text: body || `Attached: ${inputAttachments.map((a) => a.filename).join(", ")}`,
+      html: html || undefined,
+      attachments,
     });
-    return res.status(200).json({ ok: true, id: info.messageId, to: recipient });
+    return res.status(200).json({ ok: true, id: info.messageId, to: recipient, logo: !!logoCid });
   } catch (e) {
     return res.status(502).json({ error: e.message || "Send failed" });
   }

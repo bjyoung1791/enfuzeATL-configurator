@@ -237,6 +237,9 @@ function ProjectsPage({ session, profile }) {
         const creator = (creatorMap[p.created_by] || "").toLowerCase();
         return (
           (p.name || "").toLowerCase().includes(q) ||
+          (p.proposal_number || "").toLowerCase().includes(q) ||
+          (p.customer_name || "").toLowerCase().includes(q) ||
+          (p.customer_company || "").toLowerCase().includes(q) ||
           (p.service_type || "").toLowerCase().includes(q) ||
           (p.outcome || "").toLowerCase().includes(q) ||
           creator.includes(q)
@@ -314,7 +317,7 @@ function ProjectsPage({ session, profile }) {
           </div>
           <input
             type="search"
-            placeholder={`Search ${canSeeAll ? "name, creator, type" : "name, type"}...`}
+            placeholder={`Search ${canSeeAll ? "proposal #, name, customer, creator" : "proposal #, name, customer"}...`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ flex: 1, minWidth: 200, padding: "10px 14px", fontSize: 14, border: "2px solid #dce3ed", borderRadius: 8, background: "#fff", fontFamily: "inherit", outline: "none" }}
@@ -334,10 +337,11 @@ function ProjectsPage({ session, profile }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 900 }}>
               <thead>
                 <tr style={{ background: "#f7f9fb" }}>
+                  <th style={thSort} onClick={() => toggleSort("proposal_number")}>Proposal #{arrow("proposal_number")}</th>
                   <th style={thSort} onClick={() => toggleSort("name")}>Name{arrow("name")}</th>
+                  <th style={thSort} onClick={() => toggleSort("customer_name")}>Customer{arrow("customer_name")}</th>
                   <th style={thSort} onClick={() => toggleSort("service_type")}>Type{arrow("service_type")}</th>
                   {canSeeAll && <th style={thAdmin}>Creator</th>}
-                  <th style={thSort} onClick={() => toggleSort("project_date")}>Project Date{arrow("project_date")}</th>
                   <th style={thSort} onClick={() => toggleSort("updated_at")}>Last Updated{arrow("updated_at")}</th>
                   <th style={{ ...thSort, textAlign: "right" }} onClick={() => toggleSort("grand_total")}>Total{arrow("grand_total")}</th>
                   <th style={{ ...thSort, textAlign: "center" }} onClick={() => toggleSort("outcome")}>Outcome{arrow("outcome")}</th>
@@ -347,12 +351,13 @@ function ProjectsPage({ session, profile }) {
               <tbody>
                 {filtered.map((p) => (
                   <tr key={p.id} style={{ borderTop: "1px solid #edf2f7" }}>
+                    <td style={{ ...tdAdmin, fontFamily: "ui-monospace, monospace", fontSize: 12, color: "#6b7c93" }}>{p.proposal_number || "—"}</td>
                     <td style={tdAdmin}>
                       <a href={`./index.html?project=${p.id}`} style={{ color: "#203a43", fontWeight: 600, textDecoration: "none" }}>{p.name || "(untitled)"}</a>
                     </td>
+                    <td style={{ ...tdAdmin, color: "#4a5568" }}>{p.customer_name || "—"}</td>
                     <td style={{ ...tdAdmin, color: "#6b7c93", textTransform: "capitalize" }}>{p.service_type || "—"}</td>
                     {canSeeAll && <td style={{ ...tdAdmin, color: "#6b7c93" }}>{creatorMap[p.created_by] || "—"}</td>}
-                    <td style={{ ...tdAdmin, color: "#6b7c93" }}>{formatDate(p.project_date)}</td>
                     <td style={{ ...tdAdmin, color: "#6b7c93" }}>{formatDateTime(p.updated_at)}</td>
                     <td style={{ ...tdAdmin, textAlign: "right", fontWeight: 600 }}>${Number(p.grand_total || 0).toLocaleString()}</td>
                     <td style={{ ...tdAdmin, textAlign: "center" }}>{outcomePill(p.outcome)}</td>

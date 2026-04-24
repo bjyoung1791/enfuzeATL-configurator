@@ -63,6 +63,8 @@
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/pdfmake.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/vfs_fonts.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script type="text/babel">
 const { useState, useCallback, useRef, useEffect } = React;
@@ -319,13 +321,24 @@ function EnfuzeConfigurator({ session, profile }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const [productsRaw, ratesRaw, configRaw, recipientRaw] = await Promise.all([
+        const [productsRaw, ratesRaw, configRaw, recipientRaw, brandingRaw] = await Promise.all([
           sb("products?active=eq.true&order=sort_order,sku"),
           sb("install_rates?order=rate_group,sort_order"),
           sb("install_config?order=config_key"),
           sb("admin_settings?setting_key=eq.quote_recipient_email&select=setting_value"),
+          sb("admin_settings?setting_key=in.(company_name,company_address,company_phone,company_website,company_logo)&select=setting_key,setting_value"),
         ]);
         setRecipientEmail(recipientRaw?.[0]?.setting_value || "");
+
+        const brandMap = {};
+        (Array.isArray(brandingRaw) ? brandingRaw : []).forEach((r) => { brandMap[r.setting_key] = r.setting_value || ""; });
+        setCompany({
+          name: brandMap.company_name || "Enfuze Atlanta",
+          address: brandMap.company_address || "",
+          phone: brandMap.company_phone || "",
+          website: brandMap.company_website || "",
+          logo: brandMap.company_logo || "",
+        });
 
         // Build products lookup { sku: { name, price, category } }
         const prodMap = {};
@@ -382,6 +395,12 @@ function EnfuzeConfigurator({ session, profile }) {
         const s = p.state || {};
         setProjectName(p.name || "");
         setProjectDate(p.project_date || new Date().toISOString().slice(0, 10));
+        setProposalNumber(p.proposal_number || "");
+        setCustomerName(p.customer_name || "");
+        setCustomerCompany(p.customer_company || "");
+        setCustomerAddress(p.customer_address || "");
+        setCustomerEmail(p.customer_email || "");
+        setCustomerPhone(p.customer_phone || "");
         setServiceType(s.serviceType || "");
         setAudioZones(Array.isArray(s.audioZones) ? s.audioZones : []);
         setInsectZones(Array.isArray(s.insectZones) ? s.insectZones : []);
@@ -419,6 +438,13 @@ function EnfuzeConfigurator({ session, profile }) {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectDate, setProjectDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [proposalNumber, setProposalNumber] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [customerCompany, setCustomerCompany] = useState("");
+  const [customerAddress, setCustomerAddress] = useState("");
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [company, setCompany] = useState({ name: "", address: "", phone: "", website: "", logo: "" });
   const [viewMode, setViewMode] = useState("summary"); // 'summary' | 'itemized'
   const [loadedProjectId, setLoadedProjectId] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
@@ -614,30 +640,253 @@ function EnfuzeConfigurator({ session, profile }) {
     return `${m}/${d}/${y}`;
   };
 
-  const exportPDF = () => {
-    const el = printRef.current;
-    if (!el) return;
-    const style = document.createElement("style");
-    style.textContent = `
-      @media print {
-        body * { visibility: hidden; }
-        #print-area, #print-area * { visibility: visible; }
-        #print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 24px; }
-        .no-print { display: none !important; }
-        @page { margin: 0.5in; }
+  const buildPdfDoc = () => {
+    const fmtMoney = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const INK = "#0f2027";
+    const ACCENT = "#203a43";
+    const MUTED = "#6b7c93";
+    const BORDER = "#e2e8f0";
+
+    // Header block: logo + company info on the left, title + proposal meta on the right.
+    const companyBlock = [];
+    if (company.name) companyBlock.push({ text: company.name, style: "companyName" });
+    if (company.address) companyBlock.push({ text: company.address, style: "companyMeta" });
+    if (company.phone) companyBlock.push({ text: company.phone, style: "companyMeta" });
+    if (company.website) companyBlock.push({ text: company.website, style: "companyMeta" });
+    if (profile?.email) companyBlock.push({ text: profile.email, style: "companyMeta" });
+
+    const leftCol = company.logo
+      ? { stack: [{ image: company.logo, fit: [140, 70], margin: [0, 0, 0, 10] }, ...companyBlock] }
+      : { stack: companyBlock };
+
+    const rightCol = {
+      stack: [
+        { text: "GOOD FAITH ESTIMATE", style: "docTitle", alignment: "right" },
+        { text: [
+          { text: "Proposal #: ", bold: true }, { text: proposalNumber || "(unsaved)" },
+        ], alignment: "right", margin: [0, 8, 0, 0], fontSize: 10 },
+        { text: [
+          { text: "Date: ", bold: true }, { text: formatDate(projectDate) || "—" },
+        ], alignment: "right", margin: [0, 2, 0, 0], fontSize: 10 },
+      ],
+    };
+
+    // Customer block
+    const customerLines = [];
+    if (customerName)    customerLines.push({ text: customerName, bold: true });
+    if (customerCompany) customerLines.push({ text: customerCompany });
+    if (customerAddress) customerLines.push({ text: customerAddress });
+    if (customerEmail)   customerLines.push({ text: customerEmail });
+    if (customerPhone)   customerLines.push({ text: customerPhone });
+
+    const billToBlock = customerLines.length > 0 ? [
+      { text: "BILL TO", style: "sectionLabel", margin: [0, 24, 0, 6] },
+      ...customerLines.map((l) => ({ ...l, fontSize: 10, margin: [0, 0, 0, 2] })),
+    ] : [];
+
+    const projectBlock = projectName ? [
+      { text: "PROJECT", style: "sectionLabel", margin: [0, 16, 0, 6] },
+      { text: projectName, fontSize: 10, bold: true },
+    ] : [];
+
+    // Equipment table
+    const equipmentHeader = viewMode === "itemized"
+      ? [
+          { text: "SKU", style: "tableHeader" },
+          { text: "Description", style: "tableHeader" },
+          { text: "Qty", style: "tableHeader", alignment: "center" },
+          { text: "Unit Price", style: "tableHeader", alignment: "right" },
+          { text: "Ext. Price", style: "tableHeader", alignment: "right" },
+        ]
+      : [
+          { text: "SKU", style: "tableHeader" },
+          { text: "Description", style: "tableHeader" },
+          { text: "Qty", style: "tableHeader", alignment: "center" },
+        ];
+
+    const equipmentRows = quote.lineItems.map((item) => {
+      const name = PRODUCTS[item.sku]?.name || item.sku;
+      return viewMode === "itemized"
+        ? [
+            { text: item.sku, style: "tableCellMono" },
+            { text: name, style: "tableCell" },
+            { text: String(item.qty), style: "tableCell", alignment: "center" },
+            { text: fmtMoney(item.price), style: "tableCell", alignment: "right" },
+            { text: fmtMoney(item.qty * item.price), style: "tableCell", alignment: "right", bold: true },
+          ]
+        : [
+            { text: item.sku, style: "tableCellMono" },
+            { text: name, style: "tableCell" },
+            { text: String(item.qty), style: "tableCell", alignment: "center" },
+          ];
+    });
+
+    const equipmentTable = {
+      table: {
+        headerRows: 1,
+        widths: viewMode === "itemized" ? [80, "*", 30, 65, 75] : [100, "*", 40],
+        body: [equipmentHeader, ...equipmentRows],
+      },
+      layout: {
+        hLineWidth: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? 1 : 0.5,
+        hLineColor: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? ACCENT : BORDER,
+        vLineWidth: () => 0,
+        paddingLeft: () => 6,
+        paddingRight: () => 6,
+        paddingTop: () => 5,
+        paddingBottom: () => 5,
+        fillColor: (rowIndex) => (rowIndex === 0 ? "#f7f9fb" : null),
+      },
+      margin: [0, 8, 0, 0],
+    };
+
+    // Installation table (itemized mode only)
+    const installSection = [];
+    if (viewMode === "itemized" && quote.installEnabled && quote.installItems.length > 0) {
+      installSection.push({ text: "INSTALLATION", style: "sectionLabel", margin: [0, 20, 0, 6] });
+      installSection.push({
+        table: {
+          headerRows: 1,
+          widths: ["*", 40, 75, 80],
+          body: [
+            [
+              { text: "Description", style: "tableHeader" },
+              { text: "Qty", style: "tableHeader", alignment: "center" },
+              { text: "Rate", style: "tableHeader", alignment: "right" },
+              { text: "Total", style: "tableHeader", alignment: "right" },
+            ],
+            ...quote.installItems.map((item) => [
+              { text: item.desc, style: "tableCell" },
+              { text: String(item.qty), style: "tableCell", alignment: "center" },
+              { text: fmtMoney(item.rate), style: "tableCell", alignment: "right" },
+              { text: fmtMoney(item.total), style: "tableCell", alignment: "right", bold: true },
+            ]),
+          ],
+        },
+        layout: {
+          hLineWidth: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? 1 : 0.5,
+          hLineColor: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? ACCENT : BORDER,
+          vLineWidth: () => 0,
+          paddingLeft: () => 6,
+          paddingRight: () => 6,
+          paddingTop: () => 5,
+          paddingBottom: () => 5,
+          fillColor: (rowIndex) => (rowIndex === 0 ? "#f7f9fb" : null),
+        },
+      });
+    }
+
+    // Totals block
+    const totalsRows = [];
+    if (viewMode === "itemized") {
+      totalsRows.push([{ text: "Equipment Subtotal", alignment: "right", fontSize: 10 }, { text: fmtMoney(quote.equipmentTotal), alignment: "right", fontSize: 10 }]);
+      if (quote.installEnabled) {
+        totalsRows.push([{ text: "Installation Subtotal", alignment: "right", fontSize: 10 }, { text: fmtMoney(quote.installTotal), alignment: "right", fontSize: 10 }]);
       }
-    `;
-    document.head.appendChild(style);
-    window.print();
-    setTimeout(() => document.head.removeChild(style), 500);
+    }
+    totalsRows.push([
+      { text: "GRAND TOTAL", alignment: "right", fontSize: 13, bold: true, color: "#fff", fillColor: ACCENT, margin: [0, 6, 10, 6] },
+      { text: fmtMoney(quote.grandTotal), alignment: "right", fontSize: 13, bold: true, color: "#fff", fillColor: ACCENT, margin: [10, 6, 0, 6] },
+    ]);
+
+    const totalsTable = {
+      columns: [
+        { width: "*", text: "" },
+        {
+          width: 280,
+          table: {
+            widths: ["*", 100],
+            body: totalsRows,
+          },
+          layout: "noBorders",
+        },
+      ],
+      margin: [0, 18, 0, 0],
+    };
+
+    const doc = {
+      pageSize: "LETTER",
+      pageMargins: [40, 40, 40, 50],
+      info: {
+        title: `Good Faith Estimate ${proposalNumber || ""}`.trim(),
+        author: company.name || "Enfuze Atlanta",
+        subject: projectName || "Estimate",
+      },
+      content: [
+        { columns: [leftCol, rightCol] },
+        { canvas: [{ type: "line", x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 1, lineColor: ACCENT }], margin: [0, 12, 0, 0] },
+        ...billToBlock,
+        ...projectBlock,
+        { text: "EQUIPMENT", style: "sectionLabel", margin: [0, 20, 0, 6] },
+        equipmentTable,
+        ...installSection,
+        totalsTable,
+      ],
+      footer: (currentPage, pageCount) => ({
+        columns: [
+          { text: company.name || "Enfuze Atlanta", fontSize: 8, color: MUTED, margin: [40, 20, 0, 0] },
+          { text: `Page ${currentPage} of ${pageCount}`, fontSize: 8, color: MUTED, alignment: "right", margin: [0, 20, 40, 0] },
+        ],
+      }),
+      defaultStyle: { fontSize: 9, color: INK },
+      styles: {
+        companyName:   { fontSize: 14, bold: true, color: INK, margin: [0, 0, 0, 2] },
+        companyMeta:   { fontSize: 9, color: MUTED, margin: [0, 0, 0, 1] },
+        docTitle:      { fontSize: 20, bold: true, color: ACCENT, characterSpacing: 1 },
+        sectionLabel:  { fontSize: 9, bold: true, color: ACCENT, characterSpacing: 1 },
+        tableHeader:   { fontSize: 9, bold: true, color: ACCENT, characterSpacing: 0.5 },
+        tableCell:     { fontSize: 9, color: INK },
+        tableCellMono: { fontSize: 8, color: MUTED },
+      },
+    };
+
+    return doc;
   };
+
+  const pdfFileName = () => {
+    const baseName = projectName ? projectName.replace(/[^a-zA-Z0-9]/g, "_") : "Enfuze_Estimate";
+    return `${proposalNumber ? proposalNumber + "_" : ""}${baseName}_GFE.pdf`;
+  };
+
+  const exportPDF = () => {
+    if (typeof window.pdfMake === "undefined") {
+      setWarning({ title: "PDF library not loaded", message: "The PDF generator hasn't finished loading. Please wait a moment and try again." });
+      return;
+    }
+    const doc = buildPdfDoc();
+    window.pdfMake.createPdf(doc).download(pdfFileName());
+  };
+
+  const pdfToBase64 = () => new Promise((resolve, reject) => {
+    if (typeof window.pdfMake === "undefined") return reject(new Error("PDF library not loaded"));
+    try {
+      const doc = buildPdfDoc();
+      window.pdfMake.createPdf(doc).getBase64((data) => resolve(data));
+    } catch (e) {
+      reject(e);
+    }
+  });
 
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
+    const companyLine = [company.name || "Enfuze Atlanta"];
     const header = [
-      ["Enfuze Atlanta — Product Configurator"],
-      ["Project:", projectName || "(No project name)"],
+      [(company.name || "Enfuze Atlanta") + " — Good Faith Estimate"],
+      ...(company.address ? [[company.address]] : []),
+      ...(company.phone ? [[company.phone]] : []),
+      ...(company.website ? [[company.website]] : []),
+      ...(profile?.email ? [[profile.email]] : []),
+      [],
+      ["Proposal #:", proposalNumber || "(unsaved)"],
       ["Date:", formatDate(projectDate)],
+      ["Project:", projectName || "(No project name)"],
+      [],
+      ["BILL TO"],
+      ...(customerName    ? [[customerName]]    : []),
+      ...(customerCompany ? [[customerCompany]] : []),
+      ...(customerAddress ? [[customerAddress]] : []),
+      ...(customerEmail   ? [[customerEmail]]   : []),
+      ...(customerPhone   ? [[customerPhone]]   : []),
       [],
       ["EQUIPMENT"],
       viewMode === "itemized"
@@ -666,8 +915,9 @@ function EnfuzeConfigurator({ session, profile }) {
     // Column widths
     ws["!cols"] = [{ wch: 24 }, { wch: 44 }, { wch: 6 }, { wch: 12 }, { wch: 14 }];
 
-    XLSX.utils.book_append_sheet(wb, ws, "Quote");
-    const fileName = projectName ? `${projectName.replace(/[^a-zA-Z0-9]/g, "_")}_Quote.xlsx` : "Enfuze_Quote.xlsx";
+    XLSX.utils.book_append_sheet(wb, ws, "Estimate");
+    const baseName = projectName ? projectName.replace(/[^a-zA-Z0-9]/g, "_") : "Enfuze_Estimate";
+    const fileName = `${proposalNumber ? proposalNumber + "_" : ""}${baseName}.xlsx`;
     XLSX.writeFile(wb, fileName);
   };
 
@@ -691,6 +941,18 @@ function EnfuzeConfigurator({ session, profile }) {
       forcePlusAmp,
       viewMode,
     };
+    // Auto-generate proposal number on first save if the user didn't type one.
+    let finalProposalNumber = proposalNumber.trim();
+    try {
+      if (!loadedProjectId && !finalProposalNumber) {
+        const { data: generated, error: rpcErr } = await supa.rpc("next_proposal_number");
+        if (rpcErr) throw rpcErr;
+        finalProposalNumber = generated || "";
+      }
+    } catch (e) {
+      console.warn("Could not generate proposal number:", e);
+    }
+
     const payload = {
       name: projectName.trim(),
       project_date: projectDate || null,
@@ -699,6 +961,12 @@ function EnfuzeConfigurator({ session, profile }) {
       equipment_total: quote.equipmentTotal,
       installation_total: quote.installTotal,
       grand_total: quote.grandTotal,
+      proposal_number: finalProposalNumber || null,
+      customer_name: customerName.trim() || null,
+      customer_company: customerCompany.trim() || null,
+      customer_address: customerAddress.trim() || null,
+      customer_email: customerEmail.trim() || null,
+      customer_phone: customerPhone.trim() || null,
     };
     try {
       if (loadedProjectId) {
@@ -715,6 +983,7 @@ function EnfuzeConfigurator({ session, profile }) {
         const newId = Array.isArray(rows) ? rows[0]?.id : null;
         if (!newId) throw new Error("Insert did not return an id");
         setLoadedProjectId(newId);
+        if (finalProposalNumber && !proposalNumber) setProposalNumber(finalProposalNumber);
         const url = new URL(window.location);
         url.searchParams.set("project", newId);
         window.history.replaceState(null, "", url.toString());
@@ -766,24 +1035,60 @@ function EnfuzeConfigurator({ session, profile }) {
     if (emailStatus === "sending") return;
     setEmailStatus("sending");
     try {
+      // Build CSV + base64 it
       const csv = buildCSV();
-      const blob = new Blob([csv], { type: "text/csv" });
-      const base64 = await new Promise((resolve, reject) => {
+      const csvBlob = new Blob([csv], { type: "text/csv" });
+      const csvBase64 = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result).split(",")[1]);
         reader.onerror = reject;
-        reader.readAsDataURL(blob);
+        reader.readAsDataURL(csvBlob);
       });
-      const baseName = projectName ? projectName.replace(/[^a-zA-Z0-9]/g, "_") : "Enfuze_Quote";
-      const filename = `${baseName}.csv`;
-      const subject = `Enfuze Quote — ${projectName || "Untitled Project"}`;
-      const body =
-        `Enfuze Atlanta — Product Configurator\n` +
-        `Project: ${projectName || "(No project name)"}\n` +
-        `Date: ${formatDate(projectDate)}\n\n` +
-        `Equipment Subtotal: $${quote.equipmentTotal.toLocaleString()}\n` +
-        (quote.installEnabled ? `Installation Subtotal: $${quote.installTotal.toLocaleString()}\n` : "") +
-        `Grand Total: $${quote.grandTotal.toLocaleString()}\n`;
+
+      // Build PDF + base64 it (same Good Faith Estimate you get from the PDF button)
+      const pdfBase64 = await pdfToBase64();
+
+      const baseName = projectName ? projectName.replace(/[^a-zA-Z0-9]/g, "_") : "Enfuze_Estimate";
+      const csvName = `${proposalNumber ? proposalNumber + "_" : ""}${baseName}.csv`;
+      const pdfName = `${proposalNumber ? proposalNumber + "_" : ""}${baseName}_GFE.pdf`;
+      const companyName = company.name || "Enfuze Atlanta";
+      const subject = `${companyName} Estimate — ${projectName || "Untitled Project"}${proposalNumber ? " (" + proposalNumber + ")" : ""}`;
+
+      const bodyLines = [
+        `${companyName} — Good Faith Estimate`,
+        proposalNumber ? `Proposal #: ${proposalNumber}` : null,
+        `Date: ${formatDate(projectDate)}`,
+        projectName ? `Project: ${projectName}` : null,
+        customerName ? `Customer: ${customerName}${customerCompany ? " — " + customerCompany : ""}` : null,
+        "",
+        quote.installEnabled && viewMode === "itemized" ? `Equipment Subtotal: $${quote.equipmentTotal.toLocaleString()}` : null,
+        quote.installEnabled && viewMode === "itemized" ? `Installation Subtotal: $${quote.installTotal.toLocaleString()}` : null,
+        `Grand Total: $${quote.grandTotal.toLocaleString()}`,
+      ].filter(Boolean);
+      const body = bodyLines.join("\n");
+
+      const esc = (s) => String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      const html = `
+        <div style="font-family: Arial, sans-serif; color: #1a1a2e; max-width: 600px;">
+          ${company.logo ? '<img src="cid:companylogo" alt="" style="max-height:60px;max-width:200px;margin-bottom:12px" />' : ""}
+          <h2 style="margin:0 0 4px;color:#203a43;letter-spacing:1px;font-size:18px">GOOD FAITH ESTIMATE</h2>
+          <p style="margin:0 0 16px;color:#6b7c93;font-size:12px">
+            ${esc(companyName)}${company.address ? " · " + esc(company.address) : ""}
+            ${company.phone ? " · " + esc(company.phone) : ""}
+          </p>
+          <table style="border-collapse:collapse;font-size:13px;margin-bottom:12px">
+            ${proposalNumber ? `<tr><td style="padding:2px 8px 2px 0;color:#6b7c93">Proposal #</td><td style="padding:2px 0;font-weight:600">${esc(proposalNumber)}</td></tr>` : ""}
+            <tr><td style="padding:2px 8px 2px 0;color:#6b7c93">Date</td><td style="padding:2px 0">${esc(formatDate(projectDate))}</td></tr>
+            ${projectName ? `<tr><td style="padding:2px 8px 2px 0;color:#6b7c93">Project</td><td style="padding:2px 0;font-weight:600">${esc(projectName)}</td></tr>` : ""}
+            ${customerName ? `<tr><td style="padding:2px 8px 2px 0;color:#6b7c93">Customer</td><td style="padding:2px 0">${esc(customerName)}${customerCompany ? " — " + esc(customerCompany) : ""}</td></tr>` : ""}
+          </table>
+          <div style="background:linear-gradient(135deg,#0f2027,#203a43);color:#fff;padding:14px 20px;border-radius:8px;display:inline-block">
+            <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#8ec8e8">Grand Total</div>
+            <div style="font-size:24px;font-weight:700">$${Number(quote.grandTotal).toLocaleString()}</div>
+          </div>
+          <p style="margin:16px 0 0;font-size:12px;color:#6b7c93">Good Faith Estimate PDF and itemized CSV attached.</p>
+        </div>
+      `;
 
       const { data: { session: s } } = await supa.auth.getSession();
       const res = await fetch("/api/send-quote", {
@@ -792,7 +1097,16 @@ function EnfuzeConfigurator({ session, profile }) {
           "Content-Type": "application/json",
           ...(s?.access_token ? { Authorization: `Bearer ${s.access_token}` } : {}),
         },
-        body: JSON.stringify({ subject, body, filename, contentBase64: base64 }),
+        body: JSON.stringify({
+          subject,
+          body,
+          html,
+          attachments: [
+            { filename: pdfName, contentBase64: pdfBase64 },
+            { filename: csvName, contentBase64: csvBase64 },
+          ],
+          logoBase64: company.logo || undefined,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `Send failed (${res.status})`);
@@ -838,9 +1152,14 @@ function EnfuzeConfigurator({ session, profile }) {
 
       {/* Header */}
       <div style={{ textAlign: "center", marginBottom: 32 }}>
-        <div style={{ display: "inline-block", background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16 }}>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, color: "#fff", letterSpacing: "-0.5px" }}>Enfuze Atlanta</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 14, color: "#8ec8e8", fontWeight: 500, letterSpacing: 1.5, textTransform: "uppercase" }}>Product Configurator</p>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 18, background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16 }}>
+          {company.logo && (
+            <img src={company.logo} alt="" style={{ width: 56, height: 56, objectFit: "contain", borderRadius: 8, background: "rgba(255,255,255,0.08)", padding: 4 }} />
+          )}
+          <div>
+            <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, color: "#fff", letterSpacing: "-0.5px" }}>{company.name || "Enfuze Atlanta"}</h1>
+            <p style={{ margin: "4px 0 0", fontSize: 14, color: "#8ec8e8", fontWeight: 500, letterSpacing: 1.5, textTransform: "uppercase" }}>Product Configurator</p>
+          </div>
         </div>
       </div>
 
@@ -865,6 +1184,43 @@ function EnfuzeConfigurator({ session, profile }) {
               onChange={(e) => setProjectDate(e.target.value)}
               style={{ ...selectStyle, cursor: "text" }}
             />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <Label>Proposal Number</Label>
+            <input
+              type="text"
+              value={proposalNumber}
+              onChange={(e) => setProposalNumber(e.target.value)}
+              placeholder={loadedProjectId ? "" : "Auto-generated on save (e.g. EA-2026-0001)"}
+              style={{ ...selectStyle, cursor: "text", fontFamily: "ui-monospace, monospace" }}
+            />
+            <p style={{ margin: "6px 0 0", fontSize: 12, color: "#6b7c93" }}>Leave blank to auto-generate on save, or type your own.</p>
+          </div>
+        </div>
+      </Card>
+
+      {/* Customer Info */}
+      <Card title="Customer Information">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div>
+            <Label>Customer Name</Label>
+            <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Jane Smith" style={{ ...selectStyle, cursor: "text" }} />
+          </div>
+          <div>
+            <Label>Company</Label>
+            <input type="text" value={customerCompany} onChange={(e) => setCustomerCompany(e.target.value)} placeholder="(optional)" style={{ ...selectStyle, cursor: "text" }} />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <Label>Address</Label>
+            <input type="text" value={customerAddress} onChange={(e) => setCustomerAddress(e.target.value)} placeholder="Street, City, State ZIP" style={{ ...selectStyle, cursor: "text" }} />
+          </div>
+          <div>
+            <Label>Email</Label>
+            <input type="email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} placeholder="jane@example.com" style={{ ...selectStyle, cursor: "text" }} />
+          </div>
+          <div>
+            <Label>Phone</Label>
+            <input type="tel" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} placeholder="(555) 123-4567" style={{ ...selectStyle, cursor: "text" }} />
           </div>
         </div>
       </Card>

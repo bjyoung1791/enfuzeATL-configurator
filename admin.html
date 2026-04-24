@@ -929,6 +929,11 @@ function UsersTab({ currentUserId, showToast }) {
 function SettingsTab({ config = [], onRefresh, showToast }) {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientLoaded, setRecipientLoaded] = useState(false);
+  const [branding, setBranding] = useState({ company_name: "", company_address: "", company_phone: "", company_website: "", company_logo: "" });
+  const [brandingLoaded, setBrandingLoaded] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
+
+  const BRANDING_KEYS = ["company_name", "company_address", "company_phone", "company_website", "company_logo"];
 
   useEffect(() => {
     sb("admin_settings?setting_key=eq.quote_recipient_email&select=setting_value")
@@ -937,7 +942,75 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
         setRecipientLoaded(true);
       })
       .catch(() => setRecipientLoaded(true));
+
+    sb(`admin_settings?setting_key=in.(${BRANDING_KEYS.join(",")})&select=setting_key,setting_value`)
+      .then((rows) => {
+        const next = { company_name: "", company_address: "", company_phone: "", company_website: "", company_logo: "" };
+        (Array.isArray(rows) ? rows : []).forEach((r) => { next[r.setting_key] = r.setting_value || ""; });
+        setBranding(next);
+        setBrandingLoaded(true);
+      })
+      .catch(() => setBrandingLoaded(true));
   }, []);
+
+  const saveBrandingField = async (key, value) => {
+    const existing = await sb(`admin_settings?setting_key=eq.${key}&select=setting_key`);
+    if (Array.isArray(existing) && existing.length > 0) {
+      await sb(`admin_settings?setting_key=eq.${key}`, {
+        method: "PATCH",
+        body: JSON.stringify({ setting_value: value }),
+      });
+    } else {
+      await sb("admin_settings", {
+        method: "POST",
+        body: JSON.stringify({ setting_key: key, setting_value: value }),
+      });
+    }
+  };
+
+  const saveBranding = async () => {
+    try {
+      await Promise.all(BRANDING_KEYS.filter((k) => k !== "company_logo").map((k) => saveBrandingField(k, branding[k] || "")));
+      showToast("Company info saved");
+    } catch (e) {
+      showToast(e.message || "Save failed", "error");
+    }
+  };
+
+  const onLogoPicked = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    if (!/^image\/(png|jpeg|jpg|gif|webp|svg\+xml)$/i.test(file.type)) {
+      return showToast("Please choose a PNG, JPG, GIF, WEBP, or SVG image", "error");
+    }
+    if (file.size > 500 * 1024) {
+      return showToast("Logo must be under 500 KB (it's embedded on every page and PDF)", "error");
+    }
+    setLogoUploading(true);
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      await saveBrandingField("company_logo", dataUrl);
+      setBranding((b) => ({ ...b, company_logo: dataUrl }));
+      showToast("Logo uploaded");
+    } catch (err) {
+      showToast(err.message || "Upload failed", "error");
+    }
+    setLogoUploading(false);
+  };
+
+  const removeLogo = async () => {
+    try {
+      await saveBrandingField("company_logo", "");
+      setBranding((b) => ({ ...b, company_logo: "" }));
+      showToast("Logo removed");
+    } catch (e) { showToast(e.message || "Remove failed", "error"); }
+  };
 
   const saveRecipient = async () => {
     if (!/^\S+@\S+\.\S+$/.test(recipientEmail)) return showToast("Enter a valid email", "error");
@@ -994,6 +1067,55 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
           })}
         </div>
       )}
+
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 560, marginBottom: 20 }}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600 }}>Branding & Company Info</h3>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: "#6b7c93" }}>
+          Appears on the configurator header, Good Faith Estimate PDF, and Excel export.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <SmallLabel>Company Name</SmallLabel>
+            <input value={branding.company_name} onChange={(e) => setBranding((b) => ({ ...b, company_name: e.target.value }))} disabled={!brandingLoaded} style={inputStyle} />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <SmallLabel>Address</SmallLabel>
+            <input value={branding.company_address} onChange={(e) => setBranding((b) => ({ ...b, company_address: e.target.value }))} disabled={!brandingLoaded} style={inputStyle} placeholder="Street, City, State ZIP" />
+          </div>
+          <div>
+            <SmallLabel>Phone</SmallLabel>
+            <input value={branding.company_phone} onChange={(e) => setBranding((b) => ({ ...b, company_phone: e.target.value }))} disabled={!brandingLoaded} style={inputStyle} />
+          </div>
+          <div>
+            <SmallLabel>Website</SmallLabel>
+            <input value={branding.company_website} onChange={(e) => setBranding((b) => ({ ...b, company_website: e.target.value }))} disabled={!brandingLoaded} style={inputStyle} placeholder="enfuzeatlanta.com" />
+          </div>
+        </div>
+        <button onClick={saveBranding} disabled={!brandingLoaded} style={{ ...btnPrimary, marginTop: 12 }}>Save company info</button>
+
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #edf2f7" }}>
+          <SmallLabel>Logo</SmallLabel>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 8 }}>
+            <div style={{ width: 88, height: 88, borderRadius: 10, background: "#f7f9fb", border: "1px dashed #cbd5e0", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+              {branding.company_logo ? (
+                <img src={branding.company_logo} alt="Logo preview" style={{ maxWidth: "100%", maxHeight: "100%", display: "block" }} />
+              ) : (
+                <span style={{ fontSize: 11, color: "#a0aec0" }}>no logo</span>
+              )}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <label style={{ ...btnSecondary, display: "inline-block", textAlign: "center", cursor: logoUploading ? "wait" : "pointer", opacity: logoUploading ? 0.6 : 1 }}>
+                {logoUploading ? "Uploading..." : (branding.company_logo ? "Replace logo" : "Upload logo")}
+                <input type="file" accept="image/*" onChange={onLogoPicked} disabled={logoUploading} style={{ display: "none" }} />
+              </label>
+              {branding.company_logo && (
+                <button onClick={removeLogo} style={{ ...btnSecondary, color: "#e53e3e", borderColor: "#fed7d7" }}>Remove</button>
+              )}
+              <p style={{ margin: 0, fontSize: 11, color: "#6b7c93" }}>PNG / JPG / SVG, &lt; 500&nbsp;KB, square works best</p>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "1px solid #e2e8f0", maxWidth: 560, marginBottom: 20 }}>
         <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600 }}>Quote Email Recipient</h3>

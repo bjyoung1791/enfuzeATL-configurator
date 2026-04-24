@@ -929,11 +929,12 @@ function UsersTab({ currentUserId, showToast }) {
 function SettingsTab({ config = [], onRefresh, showToast }) {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientLoaded, setRecipientLoaded] = useState(false);
-  const [branding, setBranding] = useState({ company_name: "", company_address: "", company_phone: "", company_website: "", company_logo: "" });
+  const [branding, setBranding] = useState({ company_name: "", company_address: "", company_phone: "", company_website: "", company_logo: "", company_logo_dark: "" });
   const [brandingLoaded, setBrandingLoaded] = useState(false);
-  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(""); // "" | "light" | "dark"
 
-  const BRANDING_KEYS = ["company_name", "company_address", "company_phone", "company_website", "company_logo"];
+  const BRANDING_KEYS = ["company_name", "company_address", "company_phone", "company_website", "company_logo", "company_logo_dark"];
+  const LOGO_KEYS = { light: "company_logo", dark: "company_logo_dark" };
 
   useEffect(() => {
     sb("admin_settings?setting_key=eq.quote_recipient_email&select=setting_value")
@@ -945,7 +946,7 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
 
     sb(`admin_settings?setting_key=in.(${BRANDING_KEYS.join(",")})&select=setting_key,setting_value`)
       .then((rows) => {
-        const next = { company_name: "", company_address: "", company_phone: "", company_website: "", company_logo: "" };
+        const next = { company_name: "", company_address: "", company_phone: "", company_website: "", company_logo: "", company_logo_dark: "" };
         (Array.isArray(rows) ? rows : []).forEach((r) => { next[r.setting_key] = r.setting_value || ""; });
         setBranding(next);
         setBrandingLoaded(true);
@@ -970,16 +971,16 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
 
   const saveBranding = async () => {
     try {
-      await Promise.all(BRANDING_KEYS.filter((k) => k !== "company_logo").map((k) => saveBrandingField(k, branding[k] || "")));
+      await Promise.all(BRANDING_KEYS.filter((k) => k !== "company_logo" && k !== "company_logo_dark").map((k) => saveBrandingField(k, branding[k] || "")));
       showToast("Company info saved");
     } catch (e) {
       showToast(e.message || "Save failed", "error");
     }
   };
 
-  const onLogoPicked = async (e) => {
+  const onLogoPicked = (variant) => async (e) => {
     const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-selecting the same file
+    e.target.value = "";
     if (!file) return;
     if (!/^image\/(png|jpeg|jpg|gif|webp|svg\+xml)$/i.test(file.type)) {
       return showToast("Please choose a PNG, JPG, GIF, WEBP, or SVG image", "error");
@@ -987,7 +988,8 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
     if (file.size > 500 * 1024) {
       return showToast("Logo must be under 500 KB (it's embedded on every page and PDF)", "error");
     }
-    setLogoUploading(true);
+    const key = LOGO_KEYS[variant];
+    setLogoUploading(variant);
     try {
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -995,19 +997,20 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      await saveBrandingField("company_logo", dataUrl);
-      setBranding((b) => ({ ...b, company_logo: dataUrl }));
-      showToast("Logo uploaded");
+      await saveBrandingField(key, dataUrl);
+      setBranding((b) => ({ ...b, [key]: dataUrl }));
+      showToast(variant === "dark" ? "Dark-bg logo uploaded" : "Light-bg logo uploaded");
     } catch (err) {
       showToast(err.message || "Upload failed", "error");
     }
-    setLogoUploading(false);
+    setLogoUploading("");
   };
 
-  const removeLogo = async () => {
+  const removeLogo = (variant) => async () => {
+    const key = LOGO_KEYS[variant];
     try {
-      await saveBrandingField("company_logo", "");
-      setBranding((b) => ({ ...b, company_logo: "" }));
+      await saveBrandingField(key, "");
+      setBranding((b) => ({ ...b, [key]: "" }));
       showToast("Logo removed");
     } catch (e) { showToast(e.message || "Remove failed", "error"); }
   };
@@ -1094,26 +1097,55 @@ function SettingsTab({ config = [], onRefresh, showToast }) {
         <button onClick={saveBranding} disabled={!brandingLoaded} style={{ ...btnPrimary, marginTop: 12 }}>Save company info</button>
 
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #edf2f7" }}>
-          <SmallLabel>Logo</SmallLabel>
-          <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 8 }}>
-            <div style={{ width: 88, height: 88, borderRadius: 10, background: "#f7f9fb", border: "1px dashed #cbd5e0", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-              {branding.company_logo ? (
-                <img src={branding.company_logo} alt="Logo preview" style={{ maxWidth: "100%", maxHeight: "100%", display: "block" }} />
-              ) : (
-                <span style={{ fontSize: 11, color: "#a0aec0" }}>no logo</span>
-              )}
+          <SmallLabel>Logos</SmallLabel>
+          <p style={{ margin: "0 0 12px", fontSize: 12, color: "#6b7c93" }}>
+            Upload two versions of your logo — one for light backgrounds (dark lettering) used on the Good Faith Estimate PDF, Excel, and email, and one for dark backgrounds (light lettering) used on the configurator header. Either is optional; if a dark-bg version isn't set, the light-bg logo is used everywhere.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            {/* Light-bg slot */}
+            <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, padding: 12, background: "#fff" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#203a43", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Light background</div>
+              <div style={{ fontSize: 11, color: "#6b7c93", marginBottom: 10 }}>Used on PDF, Excel, email body. Dark lettering recommended.</div>
+              <div style={{ height: 96, borderRadius: 8, background: "#ffffff", border: "1px dashed #cbd5e0", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", marginBottom: 10 }}>
+                {branding.company_logo ? (
+                  <img src={branding.company_logo} alt="Light-bg logo preview" style={{ maxWidth: "90%", maxHeight: "90%", display: "block" }} />
+                ) : (
+                  <span style={{ fontSize: 11, color: "#a0aec0" }}>no logo</span>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <label style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px", cursor: logoUploading === "light" ? "wait" : "pointer", opacity: logoUploading === "light" ? 0.6 : 1 }}>
+                  {logoUploading === "light" ? "Uploading..." : (branding.company_logo ? "Replace" : "Upload")}
+                  <input type="file" accept="image/*" onChange={onLogoPicked("light")} disabled={logoUploading !== ""} style={{ display: "none" }} />
+                </label>
+                {branding.company_logo && (
+                  <button onClick={removeLogo("light")} style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px", color: "#e53e3e", borderColor: "#fed7d7" }}>Remove</button>
+                )}
+              </div>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <label style={{ ...btnSecondary, display: "inline-block", textAlign: "center", cursor: logoUploading ? "wait" : "pointer", opacity: logoUploading ? 0.6 : 1 }}>
-                {logoUploading ? "Uploading..." : (branding.company_logo ? "Replace logo" : "Upload logo")}
-                <input type="file" accept="image/*" onChange={onLogoPicked} disabled={logoUploading} style={{ display: "none" }} />
-              </label>
-              {branding.company_logo && (
-                <button onClick={removeLogo} style={{ ...btnSecondary, color: "#e53e3e", borderColor: "#fed7d7" }}>Remove</button>
-              )}
-              <p style={{ margin: 0, fontSize: 11, color: "#6b7c93" }}>PNG / JPG / SVG, &lt; 500&nbsp;KB, square works best</p>
+            {/* Dark-bg slot */}
+            <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, padding: 12, background: "#fff" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#203a43", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Dark background</div>
+              <div style={{ fontSize: 11, color: "#6b7c93", marginBottom: 10 }}>Used on configurator header. Light lettering recommended.</div>
+              <div style={{ height: 96, borderRadius: 8, background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", border: "1px dashed #4a5568", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", marginBottom: 10 }}>
+                {branding.company_logo_dark ? (
+                  <img src={branding.company_logo_dark} alt="Dark-bg logo preview" style={{ maxWidth: "90%", maxHeight: "90%", display: "block" }} />
+                ) : (
+                  <span style={{ fontSize: 11, color: "#8ec8e8" }}>no logo</span>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <label style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px", cursor: logoUploading === "dark" ? "wait" : "pointer", opacity: logoUploading === "dark" ? 0.6 : 1 }}>
+                  {logoUploading === "dark" ? "Uploading..." : (branding.company_logo_dark ? "Replace" : "Upload")}
+                  <input type="file" accept="image/*" onChange={onLogoPicked("dark")} disabled={logoUploading !== ""} style={{ display: "none" }} />
+                </label>
+                {branding.company_logo_dark && (
+                  <button onClick={removeLogo("dark")} style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px", color: "#e53e3e", borderColor: "#fed7d7" }}>Remove</button>
+                )}
+              </div>
             </div>
           </div>
+          <p style={{ margin: "10px 0 0", fontSize: 11, color: "#6b7c93" }}>PNG / JPG / SVG, &lt; 500&nbsp;KB each.</p>
         </div>
       </div>
 

@@ -326,7 +326,7 @@ function EnfuzeConfigurator({ session, profile }) {
           sb("install_rates?order=rate_group,sort_order"),
           sb("install_config?order=config_key"),
           sb("admin_settings?setting_key=eq.quote_recipient_email&select=setting_value"),
-          sb("admin_settings?setting_key=in.(company_name,company_address,company_phone,company_website,company_logo)&select=setting_key,setting_value"),
+          sb("admin_settings?setting_key=in.(company_name,company_address,company_phone,company_website,company_logo,company_logo_dark)&select=setting_key,setting_value"),
         ]);
         setRecipientEmail(recipientRaw?.[0]?.setting_value || "");
 
@@ -338,6 +338,7 @@ function EnfuzeConfigurator({ session, profile }) {
           phone: brandMap.company_phone || "",
           website: brandMap.company_website || "",
           logo: brandMap.company_logo || "",
+          logoDark: brandMap.company_logo_dark || "",
         });
 
         // Build products lookup { sku: { name, price, category } }
@@ -444,7 +445,7 @@ function EnfuzeConfigurator({ session, profile }) {
   const [customerAddress, setCustomerAddress] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
-  const [company, setCompany] = useState({ name: "", address: "", phone: "", website: "", logo: "" });
+  const [company, setCompany] = useState({ name: "", address: "", phone: "", website: "", logo: "", logoDark: "" });
   const [viewMode, setViewMode] = useState("summary"); // 'summary' | 'itemized'
   const [loadedProjectId, setLoadedProjectId] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
@@ -1153,8 +1154,8 @@ function EnfuzeConfigurator({ session, profile }) {
       {/* Header */}
       <div style={{ textAlign: "center", marginBottom: 32 }}>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 18, background: "linear-gradient(135deg, #0f2027, #203a43, #2c5364)", padding: "20px 40px", borderRadius: 16 }}>
-          {company.logo && (
-            <img src={company.logo} alt="" style={{ width: 56, height: 56, objectFit: "contain", borderRadius: 8, background: "rgba(255,255,255,0.08)", padding: 4 }} />
+          {(company.logoDark || company.logo) && (
+            <img src={company.logoDark || company.logo} alt="" style={{ width: 56, height: 56, objectFit: "contain" }} />
           )}
           <div>
             <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, color: "#fff", letterSpacing: "-0.5px" }}>{company.name || "Enfuze Atlanta"}</h1>

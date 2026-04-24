@@ -793,14 +793,23 @@ function UsersTab({ currentUserId, showToast }) {
                 <th style={thAdmin}>Email</th>
                 <th style={thAdmin}>Full Name</th>
                 <th style={thAdmin}>Role</th>
-                <th style={{ ...thAdmin, textAlign: "center" }}>Active</th>
-                <th style={{ ...thAdmin, textAlign: "center" }}>Must Change PW</th>
+                <th style={{ ...thAdmin, textAlign: "center" }}>Status</th>
                 <th style={{ ...thAdmin, textAlign: "right", width: 260 }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {users.map((u) =>
-                editing === u.id ? (
+              {users.map((u) => {
+                const status = !u.active
+                  ? { label: "Inactive", bg: "#fed7d7", fg: "#9b2c2c" }
+                  : u.must_change_password
+                    ? { label: "Pending Setup", bg: "#feebc8", fg: "#9c4221" }
+                    : { label: "Active", bg: "#c6f6d5", fg: "#22543d" };
+                const badge = (
+                  <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 999, background: status.bg, color: status.fg, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, whiteSpace: "nowrap" }}>
+                    {status.label}
+                  </span>
+                );
+                return editing === u.id ? (
                   <tr key={u.id} style={{ background: "#fffbeb" }}>
                     <td style={tdAdmin}>{u.email}</td>
                     <td style={tdAdmin}>
@@ -814,31 +823,30 @@ function UsersTab({ currentUserId, showToast }) {
                       </select>
                     </td>
                     <td style={{ ...tdAdmin, textAlign: "center" }}>
-                      <input type="checkbox" checked={editForm.active} onChange={(e) => setEditForm((f) => ({ ...f, active: e.target.checked }))} disabled={u.id === currentUserId} />
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#4a5568" }}>
+                        <input type="checkbox" checked={editForm.active} onChange={(e) => setEditForm((f) => ({ ...f, active: e.target.checked }))} disabled={u.id === currentUserId} />
+                        Active
+                      </label>
                     </td>
-                    <td style={{ ...tdAdmin, textAlign: "center", color: "#6b7c93" }}>{u.must_change_password ? "Yes" : "No"}</td>
                     <td style={{ ...tdAdmin, textAlign: "right" }}>
                       <button onClick={() => saveEdit(u)} style={btnSmall}>Save</button>
                       <button onClick={cancelEdit} style={{ ...btnSmall, marginLeft: 4 }}>Cancel</button>
                     </td>
                   </tr>
                 ) : (
-                  <tr key={u.id} style={{ borderTop: "1px solid #edf2f7", opacity: u.active ? 1 : 0.5 }}>
+                  <tr key={u.id} style={{ borderTop: "1px solid #edf2f7", opacity: u.active ? 1 : 0.6 }}>
                     <td style={tdAdmin}>{u.email}{u.id === currentUserId && <span style={{ fontSize: 11, color: "#6b7c93", marginLeft: 6 }}>(you)</span>}</td>
                     <td style={tdAdmin}>{u.full_name || "—"}</td>
                     <td style={tdAdmin}>{roleLabel[u.role] || u.role}</td>
-                    <td style={{ ...tdAdmin, textAlign: "center" }}>
-                      <span style={{ color: u.active ? "#38a169" : "#e53e3e", fontWeight: 600 }}>{u.active ? "Yes" : "No"}</span>
-                    </td>
-                    <td style={{ ...tdAdmin, textAlign: "center", color: "#6b7c93" }}>{u.must_change_password ? "Yes" : "No"}</td>
+                    <td style={{ ...tdAdmin, textAlign: "center" }}>{badge}</td>
                     <td style={{ ...tdAdmin, textAlign: "right" }}>
                       <button onClick={() => startEdit(u)} style={btnSmall}>Edit</button>
                       <button onClick={() => { setResetFor(u); setResetPw(""); }} style={{ ...btnSmall, marginLeft: 4 }}>Reset PW</button>
                       <button onClick={() => setConfirmDelete(u)} style={{ ...btnSmall, marginLeft: 4, color: "#e53e3e" }} disabled={u.id === currentUserId}>Delete</button>
                     </td>
                   </tr>
-                )
-              )}
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -1,6 +1,6 @@
 // Enfuze Configurator — service worker
 // Bump CACHE_VERSION when shipping updates so clients pick up new app shell.
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v6";
 const APP_CACHE = `enfuze-app-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `enfuze-runtime-${CACHE_VERSION}`;
 
@@ -36,6 +36,13 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return;
 
   const url = new URL(req.url);
+
+  // Same-origin /api/* routes must never be cached — they're dynamic and
+  // stale responses would silently show old data (e.g. the Users list
+  // after creating a new user). Pass through to the network unmodified.
+  if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
+    return;
+  }
 
   // HTML navigations: network-first so updates ship; fall back to cached shell offline.
   if (req.mode === "navigate") {

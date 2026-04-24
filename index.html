@@ -555,8 +555,14 @@ function EnfuzeConfigurator({ session, profile }) {
     addItem("CBL-PWR-12-2-BK-500", cablePwr12);
 
     const lineItems = [];
+    const missingSkus = [];
     itemMap.forEach((qty, sku) => {
-      lineItems.push({ sku, qty, price: PRODUCTS[sku].price });
+      const product = PRODUCTS[sku];
+      if (!product) {
+        missingSkus.push(sku);
+        return;
+      }
+      lineItems.push({ sku, qty, price: product.price });
     });
 
     // Installation
@@ -594,7 +600,7 @@ function EnfuzeConfigurator({ session, profile }) {
     const equipmentTotal = lineItems.reduce((sum, item) => sum + item.qty * item.price, 0);
     const installTotal = installItems.reduce((sum, item) => sum + item.total, 0);
 
-    return { lineItems, installItems, equipmentTotal, installTotal, installEnabled, grandTotal: equipmentTotal + installTotal };
+    return { lineItems, installItems, equipmentTotal, installTotal, installEnabled, missingSkus, grandTotal: equipmentTotal + installTotal };
   }, [audioZones, insectZones, extraCable10, extraCable24, cableSpk16Bk, cableSpk16Wh, cableSub12, cablePwr12, forcePlusAmp, serviceType, PRODUCTS, INSTALL_RATES, CONFIG]);
 
   const quote = calculateQuote();
@@ -635,7 +641,7 @@ function EnfuzeConfigurator({ session, profile }) {
       ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"],
     ];
     const equipRows = quote.lineItems.map((item) => [
-      item.sku, PRODUCTS[item.sku].name, item.qty, item.price, item.qty * item.price,
+      item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price,
     ]);
     const installSection = !quote.installEnabled
       ? []
@@ -728,7 +734,7 @@ function EnfuzeConfigurator({ session, profile }) {
       [],
       ["EQUIPMENT"],
       ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"],
-      ...quote.lineItems.map((item) => [item.sku, PRODUCTS[item.sku].name, item.qty, item.price, item.qty * item.price]),
+      ...quote.lineItems.map((item) => [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]),
     ];
     if (quote.installEnabled) {
       rows.push([], ["INSTALLATION"]);
@@ -979,6 +985,23 @@ function EnfuzeConfigurator({ session, profile }) {
         </Card>
       )}
 
+      {/* Missing-SKU warning */}
+      {quote.missingSkus && quote.missingSkus.length > 0 && (
+        <Card title="Product catalog mismatch">
+          <div style={{ background: "#fff5f5", border: "2px solid #feb2b2", borderRadius: 8, padding: 16, fontSize: 14, color: "#742a2a" }}>
+            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>
+              This project uses {quote.missingSkus.length === 1 ? "a SKU" : "SKUs"} that {quote.missingSkus.length === 1 ? "isn't" : "aren't"} in the active product catalog. {quote.missingSkus.length === 1 ? "It has" : "They have"} been skipped from the quote totals.
+            </p>
+            <p style={{ margin: "0 0 8px", fontSize: 13 }}>
+              An admin can reactivate or re-add these in the admin panel. Affected SKUs:
+            </p>
+            <ul style={{ margin: "4px 0 0 20px", fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+              {quote.missingSkus.map((sku) => <li key={sku}>{sku}</li>)}
+            </ul>
+          </div>
+        </Card>
+      )}
+
       {/* Quote Summary */}
       {hasConfig && (
         <Card title="Quote Summary">
@@ -1049,7 +1072,7 @@ function EnfuzeConfigurator({ session, profile }) {
                 {quote.lineItems.map((item, i) => (
                   <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
                     <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#6b7c93" }}>{item.sku}</td>
-                    <td style={tdStyle}>{PRODUCTS[item.sku].name}</td>
+                    <td style={tdStyle}>{PRODUCTS[item.sku]?.name || item.sku}</td>
                     <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
                     <td style={{ ...tdStyle, textAlign: "right" }}>${item.price.toLocaleString()}</td>
                     <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${(item.qty * item.price).toLocaleString()}</td>

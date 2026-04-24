@@ -23,6 +23,42 @@
 </head>
 <body>
   <div id="root"></div>
+  <div id="build-stamp" style="position:fixed;bottom:8px;right:12px;font-size:11px;color:#718096;font-family:ui-monospace,monospace;opacity:0.65;pointer-events:auto;z-index:1;background:rgba(255,255,255,0.8);padding:2px 8px;border-radius:4px;cursor:default" title="Click to reload"></div>
+  <script>
+    // Build stamp + error safety net. Runs before the app scripts so it
+    // can surface failures that would otherwise leave a blank page.
+    (function () {
+      var stamp = document.getElementById("build-stamp");
+      stamp.textContent = "loading…";
+      stamp.onclick = function () { location.reload(); };
+      fetch("/api/build", { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (b) {
+          stamp.textContent = "build " + (b.sha || "?") + (b.env && b.env !== "production" ? " · " + b.env : "");
+          stamp.title = (b.message || "") + (b.builtAt ? "\n" + b.builtAt : "");
+        })
+        .catch(function () { stamp.textContent = "build ?"; });
+
+      function showError(msg, detail) {
+        var root = document.getElementById("root");
+        if (!root || root.innerHTML.trim()) return;
+        root.innerHTML =
+          '<div style="max-width:640px;margin:60px auto;padding:32px;font-family:system-ui,sans-serif;background:#fff5f5;border:2px solid #feb2b2;border-radius:12px">' +
+          '<h2 style="margin:0 0 12px;color:#c53030;font-size:18px">App failed to start</h2>' +
+          '<p style="margin:0 0 12px;color:#742a2a;font-size:14px">' + msg + '</p>' +
+          (detail ? '<pre style="white-space:pre-wrap;font-size:12px;color:#742a2a;background:#fed7d7;padding:12px;border-radius:6px;margin:0 0 16px">' + detail + '</pre>' : '') +
+          '<button onclick="location.reload()" style="padding:10px 20px;background:#203a43;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px">Reload</button>' +
+          '</div>';
+      }
+      window.addEventListener("error", function (e) {
+        showError("A script error occurred.", String(e.message || "") + "\n" + String(e.filename || "") + ":" + String(e.lineno || ""));
+      });
+      // Safety net: if React hasn't rendered anything within 8s, surface that fact.
+      setTimeout(function () {
+        showError("The app didn't initialize within 8 seconds. A script or network request likely failed.", "");
+      }, 8000);
+    })();
+  </script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>

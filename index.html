@@ -392,7 +392,9 @@ function EnfuzeConfigurator({ session, profile }) {
         setCableSub12(s.cableSub12 || 0);
         setCablePwr12(s.cablePwr12 || 0);
         setForcePlusAmp(!!s.forcePlusAmp);
-        setLaborView(s.laborView || "total");
+        // Back-compat: old saves had laborView='total' (summary) or 'itemized'.
+        const savedView = s.viewMode || s.laborView;
+        setViewMode(savedView === "itemized" ? "itemized" : "summary");
         setLoadedProjectId(p.id);
       } catch (e) {
         console.error("Failed to load project:", e);
@@ -417,7 +419,7 @@ function EnfuzeConfigurator({ session, profile }) {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [projectName, setProjectName] = useState("");
   const [projectDate, setProjectDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [laborView, setLaborView] = useState("total");
+  const [viewMode, setViewMode] = useState("summary"); // 'summary' | 'itemized'
   const [loadedProjectId, setLoadedProjectId] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
   const [loadingProject, setLoadingProject] = useState(false);
@@ -638,21 +640,26 @@ function EnfuzeConfigurator({ session, profile }) {
       ["Date:", formatDate(projectDate)],
       [],
       ["EQUIPMENT"],
-      ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"],
+      viewMode === "itemized"
+        ? ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"]
+        : ["SKU", "Description", "Qty"],
     ];
-    const equipRows = quote.lineItems.map((item) => [
-      item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price,
-    ]);
-    const installSection = !quote.installEnabled
+    const equipRows = quote.lineItems.map((item) =>
+      viewMode === "itemized"
+        ? [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]
+        : [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty]
+    );
+    const installSection = viewMode === "summary" || !quote.installEnabled
       ? []
-      : laborView === "itemized"
-        ? [[], ["INSTALLATION"], ["Description", "Qty", "Rate", "Total"], ...quote.installItems.map((item) => [item.desc, item.qty, item.rate, item.total])]
-        : [[], ["INSTALLATION"], ["Installation Total", "", "", quote.installTotal]];
-    const totals = [
-      [], ["", "", "", "Equipment Subtotal", quote.equipmentTotal],
-      ...(quote.installEnabled ? [["", "", "", "Installation Subtotal", quote.installTotal]] : []),
-      ["", "", "", "GRAND TOTAL", quote.grandTotal],
-    ];
+      : [[], ["INSTALLATION"], ["Description", "Qty", "Rate", "Total"], ...quote.installItems.map((item) => [item.desc, item.qty, item.rate, item.total])];
+    const totals = viewMode === "summary"
+      ? [[], ["", "", "GRAND TOTAL", quote.grandTotal]]
+      : [
+          [],
+          ["", "", "", "Equipment Subtotal", quote.equipmentTotal],
+          ...(quote.installEnabled ? [["", "", "", "Installation Subtotal", quote.installTotal]] : []),
+          ["", "", "", "GRAND TOTAL", quote.grandTotal],
+        ];
     const data = [...header, ...equipRows, ...installSection, ...totals];
     const ws = XLSX.utils.aoa_to_sheet(data);
 
@@ -682,7 +689,7 @@ function EnfuzeConfigurator({ session, profile }) {
       cableSub12,
       cablePwr12,
       forcePlusAmp,
-      laborView,
+      viewMode,
     };
     const payload = {
       name: projectName.trim(),
@@ -733,21 +740,25 @@ function EnfuzeConfigurator({ session, profile }) {
       ["Date:", formatDate(projectDate)],
       [],
       ["EQUIPMENT"],
-      ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"],
-      ...quote.lineItems.map((item) => [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]),
     ];
-    if (quote.installEnabled) {
-      rows.push([], ["INSTALLATION"]);
-      if (laborView === "itemized") {
-        rows.push(["Description", "Qty", "Rate", "Total"]);
-        quote.installItems.forEach((item) => rows.push([item.desc, item.qty, item.rate, item.total]));
-      } else {
-        rows.push(["Installation Total", "", "", quote.installTotal]);
-      }
+    if (viewMode === "itemized") {
+      rows.push(["SKU", "Description", "Qty", "Unit Price", "Ext. Price"]);
+      quote.lineItems.forEach((item) => rows.push([item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]));
+    } else {
+      rows.push(["SKU", "Description", "Qty"]);
+      quote.lineItems.forEach((item) => rows.push([item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty]));
     }
-    rows.push([], ["", "", "", "Equipment Subtotal", quote.equipmentTotal]);
-    if (quote.installEnabled) rows.push(["", "", "", "Installation Subtotal", quote.installTotal]);
-    rows.push(["", "", "", "GRAND TOTAL", quote.grandTotal]);
+    if (viewMode === "itemized" && quote.installEnabled) {
+      rows.push([], ["INSTALLATION"]);
+      rows.push(["Description", "Qty", "Rate", "Total"]);
+      quote.installItems.forEach((item) => rows.push([item.desc, item.qty, item.rate, item.total]));
+    }
+    rows.push([]);
+    if (viewMode === "itemized") {
+      rows.push(["", "", "", "Equipment Subtotal", quote.equipmentTotal]);
+      if (quote.installEnabled) rows.push(["", "", "", "Installation Subtotal", quote.installTotal]);
+    }
+    rows.push(["", "", viewMode === "summary" ? "" : "", "GRAND TOTAL", quote.grandTotal]);
     return rows.map((r) => r.map(esc).join(",")).join("\r\n");
   };
 
@@ -1055,6 +1066,21 @@ function EnfuzeConfigurator({ session, profile }) {
               </button>
             </div>
           </div>
+          {/* View toggle: Itemized vs Summary. Applies to equipment + installation + exports. */}
+          <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, fontSize: 13, color: "#6b7c93", marginBottom: 16 }}>
+            <span style={{ fontWeight: viewMode === "itemized" ? 600 : 400, color: viewMode === "itemized" ? "#203a43" : "#6b7c93" }}>Itemized</span>
+            <div
+              onClick={() => setViewMode(viewMode === "itemized" ? "summary" : "itemized")}
+              style={{ width: 44, height: 24, borderRadius: 12, background: viewMode === "summary" ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
+              role="switch"
+              aria-checked={viewMode === "summary"}
+              aria-label="Toggle between itemized and summary views"
+            >
+              <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: viewMode === "summary" ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+            </div>
+            <span style={{ fontWeight: viewMode === "summary" ? 600 : 400, color: viewMode === "summary" ? "#203a43" : "#6b7c93" }}>Summary</span>
+          </div>
+
           {/* Equipment */}
           <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 600, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>Equipment</h3>
           <div style={{ overflowX: "auto" }}>
@@ -1064,8 +1090,8 @@ function EnfuzeConfigurator({ session, profile }) {
                   <th style={thStyle}>SKU</th>
                   <th style={thStyle}>Description</th>
                   <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
-                  <th style={{ ...thStyle, textAlign: "right" }}>Unit Price</th>
-                  <th style={{ ...thStyle, textAlign: "right" }}>Ext. Price</th>
+                  {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Unit Price</th>}
+                  {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Ext. Price</th>}
                 </tr>
               </thead>
               <tbody>
@@ -1074,66 +1100,48 @@ function EnfuzeConfigurator({ session, profile }) {
                     <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#6b7c93" }}>{item.sku}</td>
                     <td style={tdStyle}>{PRODUCTS[item.sku]?.name || item.sku}</td>
                     <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
-                    <td style={{ ...tdStyle, textAlign: "right" }}>${item.price.toLocaleString()}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${(item.qty * item.price).toLocaleString()}</td>
+                    {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right" }}>${item.price.toLocaleString()}</td>}
+                    {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${(item.qty * item.price).toLocaleString()}</td>}
                   </tr>
                 ))}
-                <tr style={{ borderTop: "2px solid #203a43" }}>
-                  <td colSpan={4} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Equipment Subtotal</td>
-                  <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.equipmentTotal.toLocaleString()}</td>
-                </tr>
+                {viewMode === "itemized" && (
+                  <tr style={{ borderTop: "2px solid #203a43" }}>
+                    <td colSpan={4} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Equipment Subtotal</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.equipmentTotal.toLocaleString()}</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
 
-          {/* Installation */}
-          {quote.installEnabled && (
+          {/* Installation — only in itemized view */}
+          {viewMode === "itemized" && quote.installEnabled && (
           <>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>Installation</h3>
-            <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#6b7c93" }}>
-              <span style={{ fontWeight: laborView === "itemized" ? 600 : 400, color: laborView === "itemized" ? "#203a43" : "#6b7c93" }}>Itemized</span>
-              <div
-                onClick={() => setLaborView(laborView === "itemized" ? "total" : "itemized")}
-                style={{ width: 44, height: 24, borderRadius: 12, background: laborView === "total" ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
-              >
-                <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: laborView === "total" ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-              </div>
-              <span style={{ fontWeight: laborView === "total" ? 600 : 400, color: laborView === "total" ? "#203a43" : "#6b7c93" }}>Total Only</span>
-            </div>
-          </div>
-
-          {laborView === "itemized" ? (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 24 }}>
-              <thead>
-                <tr style={{ borderBottom: "2px solid #203a43" }}>
-                  <th style={thStyle}>Description</th>
-                  <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
-                  <th style={{ ...thStyle, textAlign: "right" }}>Rate</th>
-                  <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
+          <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 600, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>Installation</h3>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 24 }}>
+            <thead>
+              <tr style={{ borderBottom: "2px solid #203a43" }}>
+                <th style={thStyle}>Description</th>
+                <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Rate</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {quote.installItems.map((item, i) => (
+                <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                  <td style={tdStyle}>{item.desc}</td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
+                  <td style={{ ...tdStyle, textAlign: "right" }}>${item.rate.toLocaleString()}</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${item.total.toLocaleString()}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {quote.installItems.map((item, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
-                    <td style={tdStyle}>{item.desc}</td>
-                    <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
-                    <td style={{ ...tdStyle, textAlign: "right" }}>${item.rate.toLocaleString()}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${item.total.toLocaleString()}</td>
-                  </tr>
-                ))}
-                <tr style={{ borderTop: "2px solid #203a43" }}>
-                  <td colSpan={3} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Installation Subtotal</td>
-                  <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.installTotal.toLocaleString()}</td>
-                </tr>
-              </tbody>
-            </table>
-          ) : (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 12px", marginBottom: 24, borderTop: "2px solid #203a43", borderBottom: "2px solid #203a43" }}>
-              <span style={{ fontSize: 15, fontWeight: 700, color: "#203a43" }}>Installation Total</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: "#203a43" }}>${quote.installTotal.toLocaleString()}</span>
-            </div>
-          )}
+              ))}
+              <tr style={{ borderTop: "2px solid #203a43" }}>
+                <td colSpan={3} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Installation Subtotal</td>
+                <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.installTotal.toLocaleString()}</td>
+              </tr>
+            </tbody>
+          </table>
           </>
           )}
 

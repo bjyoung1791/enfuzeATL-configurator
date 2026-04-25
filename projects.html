@@ -242,6 +242,7 @@ function ProjectsPage({ session, profile }) {
           (p.customer_company || "").toLowerCase().includes(q) ||
           (p.service_type || "").toLowerCase().includes(q) ||
           (p.outcome || "").toLowerCase().includes(q) ||
+          (p.notes || "").toLowerCase().includes(q) ||
           creator.includes(q)
         );
       });
@@ -317,7 +318,7 @@ function ProjectsPage({ session, profile }) {
           </div>
           <input
             type="search"
-            placeholder={`Search ${canSeeAll ? "proposal #, name, customer, creator" : "proposal #, name, customer"}...`}
+            placeholder={`Search ${canSeeAll ? "proposal #, name, customer, notes, creator" : "proposal #, name, customer, notes"}...`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ flex: 1, minWidth: 200, padding: "10px 14px", fontSize: 14, border: "2px solid #dce3ed", borderRadius: 8, background: "#fff", fontFamily: "inherit", outline: "none" }}

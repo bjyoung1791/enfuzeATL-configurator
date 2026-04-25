@@ -302,19 +302,23 @@ const DEFAULT_CONFIG = {
 };
 
 function createAudioZone(id) {
-  return { id, name: "", speakerLines: [], subLines: [] };
+  return { id, name: "", speakerLines: [], subLines: [], notes: "", notesShowOnEstimate: true };
 }
 
 // Converts a saved audio zone — whether in the old flat shape or the new
 // line-based shape — into the new shape. Idempotent.
 function migrateAudioZone(z) {
   if (!z) return createAudioZone(1);
+  const notes = z.notes || "";
+  const notesShowOnEstimate = z.notesShowOnEstimate !== false; // default true
   if (Array.isArray(z.speakerLines) || Array.isArray(z.subLines)) {
     return {
       id: z.id,
       name: z.name || "",
       speakerLines: Array.isArray(z.speakerLines) ? z.speakerLines : [],
       subLines: Array.isArray(z.subLines) ? z.subLines : [],
+      notes,
+      notesShowOnEstimate,
     };
   }
   const speakerLines = [];
@@ -329,16 +333,22 @@ function migrateAudioZone(z) {
   if (z.subs > 0) {
     subLines.push({ id: newLineId(), sku: "SPK-SUB10-BR", qty: z.subs });
   }
-  return { id: z.id, name: z.name || "", speakerLines, subLines };
+  return { id: z.id, name: z.name || "", speakerLines, subLines, notes, notesShowOnEstimate };
 }
 
 function createInsectZone(id) {
-  return { id, name: "", repellers: 0 };
+  return { id, name: "", repellers: 0, notes: "", notesShowOnEstimate: true };
 }
 
 function migrateInsectZone(z) {
   if (!z) return createInsectZone(1);
-  return { id: z.id, name: z.name || "", repellers: z.repellers || 0 };
+  return {
+    id: z.id,
+    name: z.name || "",
+    repellers: z.repellers || 0,
+    notes: z.notes || "",
+    notesShowOnEstimate: z.notesShowOnEstimate !== false,
+  };
 }
 
 let _lineSeq = 1;
@@ -454,6 +464,8 @@ function EnfuzeConfigurator({ session, profile }) {
         setCustomerAddress(p.customer_address || "");
         setCustomerEmail(p.customer_email || "");
         setCustomerPhone(p.customer_phone || "");
+        setProjectNotes(p.notes || "");
+        setProjectNotesShowOnEstimate(p.notes_show_on_estimate !== false);
         setServiceType(s.serviceType || "");
         setAudioZones(Array.isArray(s.audioZones) ? s.audioZones.map(migrateAudioZone) : []);
         setInsectZones(Array.isArray(s.insectZones) ? s.insectZones.map(migrateInsectZone) : []);
@@ -501,6 +513,8 @@ function EnfuzeConfigurator({ session, profile }) {
   const [company, setCompany] = useState({ name: "", address: "", phone: "", website: "", logo: "", logoDark: "" });
   const [viewMode, setViewMode] = useState("summary"); // 'summary' | 'itemized'
   const [groupByZone, setGroupByZone] = useState(false);
+  const [projectNotes, setProjectNotes] = useState("");
+  const [projectNotesShowOnEstimate, setProjectNotesShowOnEstimate] = useState(true);
   const [loadedProjectId, setLoadedProjectId] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
   const [loadingProject, setLoadingProject] = useState(false);
@@ -807,6 +821,27 @@ function EnfuzeConfigurator({ session, profile }) {
       { text: projectName, fontSize: 10, bold: true },
     ] : [];
 
+    // Project notes block (only when both populated and flagged for inclusion).
+    const projectNotesText = (projectNotes || "").trim();
+    const projectNotesBlock = (projectNotesText && projectNotesShowOnEstimate) ? [
+      { text: "PROJECT NOTES", style: "sectionLabel", margin: [0, 16, 0, 6] },
+      { text: projectNotesText, fontSize: 10, color: INK, lineHeight: 1.4 },
+    ] : [];
+
+    // Per-zone installation notes — only zones whose notes are populated AND flagged.
+    const noteZones = [
+      ...audioZones.map((z, i) => ({ kind: "audio", name: z.name?.trim() || `Audio Zone ${i + 1}`, notes: (z.notes || "").trim(), show: z.notesShowOnEstimate !== false })),
+      ...insectZones.map((z, i) => ({ kind: "insect", name: z.name?.trim() || `Insect Zone ${i + 1}`, notes: (z.notes || "").trim(), show: z.notesShowOnEstimate !== false })),
+    ].filter((z) => z.notes && z.show);
+
+    const installNotesBlock = noteZones.length > 0 ? [
+      { text: "INSTALLATION NOTES", style: "sectionLabel", margin: [0, 24, 0, 6] },
+      ...noteZones.flatMap((z) => [
+        { text: z.name, fontSize: 9, bold: true, color: ACCENT, margin: [0, 6, 0, 2] },
+        { text: z.notes, fontSize: 9, color: INK, lineHeight: 1.4 },
+      ]),
+    ] : [];
+
     // Equipment table
     const equipmentHeader = viewMode === "itemized"
       ? [
@@ -945,10 +980,12 @@ function EnfuzeConfigurator({ session, profile }) {
         { canvas: [{ type: "line", x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 1, lineColor: ACCENT }], margin: [0, 12, 0, 0] },
         ...billToBlock,
         ...projectBlock,
+        ...projectNotesBlock,
         { text: "EQUIPMENT", style: "sectionLabel", margin: [0, 20, 0, 6] },
         ...equipmentBlock,
         ...installSection,
         totalsTable,
+        ...installNotesBlock,
       ],
       footer: (currentPage, pageCount) => ({
         columns: [
@@ -1017,6 +1054,9 @@ function EnfuzeConfigurator({ session, profile }) {
       ...(customerEmail   ? [[customerEmail]]   : []),
       ...(customerPhone   ? [[customerPhone]]   : []),
       [],
+      ...((projectNotes || "").trim() && projectNotesShowOnEstimate
+        ? [["PROJECT NOTES"], [(projectNotes || "").trim()], []]
+        : []),
       ["EQUIPMENT"],
     ];
     const equipHeaderRow = viewMode === "itemized"
@@ -1048,7 +1088,16 @@ function EnfuzeConfigurator({ session, profile }) {
           ...(quote.installEnabled ? [["", "", "", "Installation Subtotal", quote.installTotal]] : []),
           ["", "", "", "GRAND TOTAL", quote.grandTotal],
         ];
-    const data = [...header, ...equipRows, ...installSection, ...totals];
+    // Per-zone install notes (only zones with content + flagged for inclusion)
+    const noteZones = [
+      ...audioZones.map((z, i) => ({ name: z.name?.trim() || `Audio Zone ${i + 1}`, notes: (z.notes || "").trim(), show: z.notesShowOnEstimate !== false })),
+      ...insectZones.map((z, i) => ({ name: z.name?.trim() || `Insect Zone ${i + 1}`, notes: (z.notes || "").trim(), show: z.notesShowOnEstimate !== false })),
+    ].filter((z) => z.notes && z.show);
+    const installNotesRows = noteZones.length > 0
+      ? [[], ["INSTALLATION NOTES"], ...noteZones.flatMap((z) => [[z.name], [z.notes]])]
+      : [];
+
+    const data = [...header, ...equipRows, ...installSection, ...totals, ...installNotesRows];
     const ws = XLSX.utils.aoa_to_sheet(data);
 
     // Column widths
@@ -1107,6 +1156,8 @@ function EnfuzeConfigurator({ session, profile }) {
       customer_address: customerAddress.trim() || null,
       customer_email: customerEmail.trim() || null,
       customer_phone: customerPhone.trim() || null,
+      notes: projectNotes.trim() || null,
+      notes_show_on_estimate: !!projectNotesShowOnEstimate,
     };
     try {
       if (loadedProjectId) {
@@ -1143,11 +1194,15 @@ function EnfuzeConfigurator({ session, profile }) {
       const s = String(v);
       return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
+    const projectNotesText = (projectNotes || "").trim();
     const rows = [
       ["Enfuze Atlanta — Product Configurator"],
       ["Project:", projectName || "(No project name)"],
       ["Date:", formatDate(projectDate)],
       [],
+      ...(projectNotesText && projectNotesShowOnEstimate
+        ? [["PROJECT NOTES"], [projectNotesText], []]
+        : []),
       ["EQUIPMENT"],
     ];
     const csvHeaderRow = viewMode === "itemized"
@@ -1178,6 +1233,16 @@ function EnfuzeConfigurator({ session, profile }) {
       if (quote.installEnabled) rows.push(["", "", "", "Installation Subtotal", quote.installTotal]);
     }
     rows.push(["", "", viewMode === "summary" ? "" : "", "GRAND TOTAL", quote.grandTotal]);
+
+    const noteZones = [
+      ...audioZones.map((z, i) => ({ name: z.name?.trim() || `Audio Zone ${i + 1}`, notes: (z.notes || "").trim(), show: z.notesShowOnEstimate !== false })),
+      ...insectZones.map((z, i) => ({ name: z.name?.trim() || `Insect Zone ${i + 1}`, notes: (z.notes || "").trim(), show: z.notesShowOnEstimate !== false })),
+    ].filter((z) => z.notes && z.show);
+    if (noteZones.length > 0) {
+      rows.push([], ["INSTALLATION NOTES"]);
+      noteZones.forEach((z) => { rows.push([z.name]); rows.push([z.notes]); });
+    }
+
     return rows.map((r) => r.map(esc).join(",")).join("\r\n");
   };
 
@@ -1232,6 +1297,9 @@ function EnfuzeConfigurator({ session, profile }) {
             ${projectName ? `<tr><td style="padding:2px 8px 2px 0;color:#6b7c93">Project</td><td style="padding:2px 0;font-weight:600">${esc(projectName)}</td></tr>` : ""}
             ${customerName ? `<tr><td style="padding:2px 8px 2px 0;color:#6b7c93">Customer</td><td style="padding:2px 0">${esc(customerName)}${customerCompany ? " — " + esc(customerCompany) : ""}</td></tr>` : ""}
           </table>
+          ${(projectNotes || "").trim() && projectNotesShowOnEstimate ? `
+          <div style="background:#f7f9fb;border-left:3px solid #203a43;padding:10px 14px;margin:0 0 14px;font-size:13px;line-height:1.5;white-space:pre-wrap">${esc((projectNotes || "").trim())}</div>
+          ` : ""}
           <div style="background:linear-gradient(135deg,#0f2027,#203a43);color:#fff;padding:14px 20px;border-radius:8px;display:inline-block">
             <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#8ec8e8">Grand Total</div>
             <div style="font-size:24px;font-weight:700">$${Number(quote.grandTotal).toLocaleString()}</div>
@@ -1375,6 +1443,18 @@ function EnfuzeConfigurator({ session, profile }) {
         </div>
       </Card>
 
+      {/* Project Notes */}
+      <Card title="Project Notes">
+        <NoteField
+          value={projectNotes}
+          onChange={setProjectNotes}
+          show={projectNotesShowOnEstimate}
+          onShowChange={setProjectNotesShowOnEstimate}
+          placeholder="Internal commentary, customer preferences, install context, anything worth remembering about this project."
+          rows={4}
+        />
+      </Card>
+
       {/* Service Type Selection */}
       <Card title="What service do you need?">
         <select value={serviceType} onChange={(e) => handleServiceChange(e.target.value)} style={selectStyle}>
@@ -1458,6 +1538,18 @@ function EnfuzeConfigurator({ session, profile }) {
                     addLabel="+ Add Subwoofer"
                   />
                 </div>
+
+                <div style={{ marginTop: 16 }}>
+                  <Label>Notes / Install Details</Label>
+                  <NoteField
+                    value={zone.notes}
+                    onChange={(v) => setAudioZones((prev) => prev.map((z, idx) => idx === i ? { ...z, notes: v } : z))}
+                    show={zone.notesShowOnEstimate !== false}
+                    onShowChange={(v) => setAudioZones((prev) => prev.map((z, idx) => idx === i ? { ...z, notesShowOnEstimate: v } : z))}
+                    placeholder="e.g. Speakers in soffits, run power from main panel, customer prefers black grilles."
+                    rows={3}
+                  />
+                </div>
               </div>
             );
           })}
@@ -1510,6 +1602,17 @@ function EnfuzeConfigurator({ session, profile }) {
               <div>
                 <Label>Repellers</Label>
                 <NumberInput value={zone.repellers} onChange={(v) => updateInsectZone(i, "repellers", v)} min={0} max={CONFIG.max_repellers_per_zone} />
+              </div>
+              <div style={{ marginTop: 16 }}>
+                <Label>Notes / Install Details</Label>
+                <NoteField
+                  value={zone.notes}
+                  onChange={(v) => setInsectZones((prev) => prev.map((z, idx) => idx === i ? { ...z, notes: v } : z))}
+                  show={zone.notesShowOnEstimate !== false}
+                  onShowChange={(v) => setInsectZones((prev) => prev.map((z, idx) => idx === i ? { ...z, notesShowOnEstimate: v } : z))}
+                  placeholder="e.g. Repellers ~3ft above ground, hub near outdoor outlet."
+                  rows={3}
+                />
               </div>
             </div>
           ))}
@@ -1834,6 +1937,44 @@ function LineRow({ line, options, onChange, onRemove, cap }) {
       >
         ✕
       </button>
+    </div>
+  );
+}
+
+function NoteField({ value, onChange, show, onShowChange, placeholder, rows = 3, label }) {
+  return (
+    <div>
+      {label && <Label>{label}</Label>}
+      <textarea
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder || ""}
+        rows={rows}
+        style={{
+          width: "100%",
+          padding: "12px 16px",
+          fontSize: 14,
+          border: "2px solid #dce3ed",
+          borderRadius: 8,
+          background: "#fff",
+          color: "#1a1a2e",
+          fontFamily: "inherit",
+          fontWeight: 500,
+          outline: "none",
+          resize: "vertical",
+          boxSizing: "border-box",
+          lineHeight: 1.5,
+        }}
+      />
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 13, color: "#4a5568", cursor: "pointer", userSelect: "none" }}>
+        <input
+          type="checkbox"
+          checked={!!show}
+          onChange={(e) => onShowChange(e.target.checked)}
+          style={{ width: 16, height: 16, cursor: "pointer" }}
+        />
+        <span>Include on estimate <span style={{ color: "#a0aec0" }}>(PDF / Excel / email)</span></span>
+      </label>
     </div>
   );
 }

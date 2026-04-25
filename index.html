@@ -302,7 +302,7 @@ const DEFAULT_CONFIG = {
 };
 
 function createAudioZone(id) {
-  return { id, speakerLines: [], subLines: [] };
+  return { id, name: "", speakerLines: [], subLines: [] };
 }
 
 // Converts a saved audio zone — whether in the old flat shape or the new
@@ -312,6 +312,7 @@ function migrateAudioZone(z) {
   if (Array.isArray(z.speakerLines) || Array.isArray(z.subLines)) {
     return {
       id: z.id,
+      name: z.name || "",
       speakerLines: Array.isArray(z.speakerLines) ? z.speakerLines : [],
       subLines: Array.isArray(z.subLines) ? z.subLines : [],
     };
@@ -328,11 +329,16 @@ function migrateAudioZone(z) {
   if (z.subs > 0) {
     subLines.push({ id: newLineId(), sku: "SPK-SUB10-BR", qty: z.subs });
   }
-  return { id: z.id, speakerLines, subLines };
+  return { id: z.id, name: z.name || "", speakerLines, subLines };
 }
 
 function createInsectZone(id) {
-  return { id, repellers: 0 };
+  return { id, name: "", repellers: 0 };
+}
+
+function migrateInsectZone(z) {
+  if (!z) return createInsectZone(1);
+  return { id: z.id, name: z.name || "", repellers: z.repellers || 0 };
 }
 
 let _lineSeq = 1;
@@ -450,7 +456,7 @@ function EnfuzeConfigurator({ session, profile }) {
         setCustomerPhone(p.customer_phone || "");
         setServiceType(s.serviceType || "");
         setAudioZones(Array.isArray(s.audioZones) ? s.audioZones.map(migrateAudioZone) : []);
-        setInsectZones(Array.isArray(s.insectZones) ? s.insectZones : []);
+        setInsectZones(Array.isArray(s.insectZones) ? s.insectZones.map(migrateInsectZone) : []);
         setExtraCable10(s.extraCable10 || 0);
         setExtraCable24(s.extraCable24 || 0);
         setCableSpk16Bk(s.cableSpk16Bk || 0);
@@ -461,6 +467,7 @@ function EnfuzeConfigurator({ session, profile }) {
         // Back-compat: old saves had laborView='total' (summary) or 'itemized'.
         const savedView = s.viewMode || s.laborView;
         setViewMode(savedView === "itemized" ? "itemized" : "summary");
+        setGroupByZone(!!s.groupByZone);
         setLoadedProjectId(p.id);
       } catch (e) {
         console.error("Failed to load project:", e);
@@ -493,6 +500,7 @@ function EnfuzeConfigurator({ session, profile }) {
   const [customerPhone, setCustomerPhone] = useState("");
   const [company, setCompany] = useState({ name: "", address: "", phone: "", website: "", logo: "", logoDark: "" });
   const [viewMode, setViewMode] = useState("summary"); // 'summary' | 'itemized'
+  const [groupByZone, setGroupByZone] = useState(false);
   const [loadedProjectId, setLoadedProjectId] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
   const [loadingProject, setLoadingProject] = useState(false);
@@ -617,22 +625,26 @@ function EnfuzeConfigurator({ session, profile }) {
   const subOptions = useMemo(() => buildProductOptions(PRODUCTS, "Subwoofers"), [PRODUCTS]);
 
   const calculateQuote = useCallback(() => {
-    const itemMap = new Map();
     let totalSpeakerSubPoints = 0;
     let totalAudioZones = 0;
     let totalRepellers = 0;
 
-    const addItem = (sku, qty) => {
+    // zoneGroups tracks which SKUs came from which zone, so the quote
+    // can either be displayed flat (aggregated across zones) or grouped
+    // by zone. Each group has its own per-SKU map.
+    const zoneGroups = [];
+    const makeGroup = (id, name, type) => {
+      const group = { id, name, type, map: new Map() };
+      zoneGroups.push(group);
+      return group;
+    };
+    const addToGroup = (group, sku, qty) => {
       if (qty <= 0) return;
-      if (itemMap.has(sku)) {
-        itemMap.set(sku, itemMap.get(sku) + qty);
-      } else {
-        itemMap.set(sku, qty);
-      }
+      group.map.set(sku, (group.map.get(sku) || 0) + qty);
     };
 
     // Audio zones
-    audioZones.forEach((zone) => {
+    audioZones.forEach((zone, idx) => {
       const speakerLines = zone.speakerLines || [];
       const subLines = zone.subLines || [];
       const totalSpeakers = speakerLines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
@@ -642,42 +654,58 @@ function EnfuzeConfigurator({ session, profile }) {
       totalAudioZones++;
       const ampSku = (forcePlusAmp || totalSpeakers > CONFIG.amp_upgrade_threshold) ? CONFIG.plus_amp_sku : CONFIG.standard_amp_sku;
 
-      addItem("SONOS-PORT", 1);
-      addItem(ampSku, 1);
-      addItem("PS-120-12VAC-300", 1);
-
-      speakerLines.forEach((l) => { if (l.sku && Number(l.qty) > 0) addItem(l.sku, Number(l.qty)); });
-      subLines.forEach((l) => { if (l.sku && Number(l.qty) > 0) addItem(l.sku, Number(l.qty)); });
+      const group = makeGroup(`audio_${zone.id}`, zone.name?.trim() || `Audio Zone ${idx + 1}`, "audio");
+      addToGroup(group, "SONOS-PORT", 1);
+      addToGroup(group, ampSku, 1);
+      addToGroup(group, "PS-120-12VAC-300", 1);
+      speakerLines.forEach((l) => { if (l.sku && Number(l.qty) > 0) addToGroup(group, l.sku, Number(l.qty)); });
+      subLines.forEach((l) => { if (l.sku && Number(l.qty) > 0) addToGroup(group, l.sku, Number(l.qty)); });
       totalSpeakerSubPoints += totalSpeakers + totalSubs;
     });
 
     // Insect zones
-    insectZones.forEach((zone) => {
-      if (zone.repellers === 0) return;
-      addItem("THERM-IS-HUB2", 1);
-      addItem("THERM-IS-REP1", zone.repellers);
-      addItem("THERM-LIV-R180-1", zone.repellers);
+    insectZones.forEach((zone, idx) => {
+      if (!zone.repellers) return;
+      const group = makeGroup(`insect_${zone.id}`, zone.name?.trim() || `Insect Zone ${idx + 1}`, "insect");
+      addToGroup(group, "THERM-IS-HUB2", 1);
+      addToGroup(group, "THERM-IS-REP1", zone.repellers);
+      addToGroup(group, "THERM-LIV-R180-1", zone.repellers);
       totalRepellers += zone.repellers;
     });
 
-    // Extension cables (insect)
-    addItem("THERM-IS-CC10", extraCable10);
-    addItem("THERM-IS-CC24", extraCable24);
+    // Job-level extras (not tied to a specific zone)
+    const extras = makeGroup("__extras__", "Wire & Cable", "extras");
+    addToGroup(extras, "THERM-IS-CC10", extraCable10);
+    addToGroup(extras, "THERM-IS-CC24", extraCable24);
+    addToGroup(extras, "CBL-SPK-16-2-BK-500", cableSpk16Bk);
+    addToGroup(extras, "CBL-SPK-16-2-WH-500", cableSpk16Wh);
+    addToGroup(extras, "CBL-SPK-12-2-BK-500", cableSub12);
+    addToGroup(extras, "CBL-PWR-12-2-BK-500", cablePwr12);
+    if (extras.map.size === 0) zoneGroups.pop(); // drop empty extras group
 
-    // Audio cables
-    addItem("CBL-SPK-16-2-BK-500", cableSpk16Bk);
-    addItem("CBL-SPK-16-2-WH-500", cableSpk16Wh);
-    addItem("CBL-SPK-12-2-BK-500", cableSub12);
-    addItem("CBL-PWR-12-2-BK-500", cablePwr12);
-
-    const lineItems = [];
+    // Resolve each group's map into line items, tracking missing SKUs.
     const missingSkus = [];
-    itemMap.forEach((qty, sku) => {
+    const resolveMap = (map) => {
+      const lines = [];
+      map.forEach((qty, sku) => {
+        const product = PRODUCTS[sku];
+        if (!product) {
+          if (!missingSkus.includes(sku)) missingSkus.push(sku);
+          return;
+        }
+        lines.push({ sku, qty, price: product.price });
+      });
+      return lines;
+    };
+    const zoneGroupsResolved = zoneGroups.map((g) => ({ id: g.id, name: g.name, type: g.type, lines: resolveMap(g.map) })).filter((g) => g.lines.length > 0);
+
+    // Flat aggregated lineItems (used by non-grouped renderers).
+    const aggMap = new Map();
+    zoneGroupsResolved.forEach((g) => g.lines.forEach((l) => aggMap.set(l.sku, (aggMap.get(l.sku) || 0) + l.qty)));
+    const lineItems = [];
+    aggMap.forEach((qty, sku) => {
       const product = PRODUCTS[sku];
-      if (!product) {
-        missingSkus.push(sku);
-        return;
-      }
+      if (!product) return;
       lineItems.push({ sku, qty, price: product.price });
     });
 
@@ -716,8 +744,8 @@ function EnfuzeConfigurator({ session, profile }) {
     const equipmentTotal = lineItems.reduce((sum, item) => sum + item.qty * item.price, 0);
     const installTotal = installItems.reduce((sum, item) => sum + item.total, 0);
 
-    return { lineItems, installItems, equipmentTotal, installTotal, installEnabled, missingSkus, grandTotal: equipmentTotal + installTotal };
-  }, [audioZones, insectZones, extraCable10, extraCable24, cableSpk16Bk, cableSpk16Wh, cableSub12, cablePwr12, forcePlusAmp, serviceType, PRODUCTS, INSTALL_RATES, CONFIG]);
+    return { lineItems, zoneGroups: zoneGroupsResolved, installItems, equipmentTotal, installTotal, installEnabled, missingSkus, grandTotal: equipmentTotal + installTotal };
+  }, [audioZones, insectZones, extraCable10, extraCable24, cableSpk16Bk, cableSpk16Wh, cableSub12, cablePwr12, forcePlusAmp, serviceType, PRODUCTS, INSTALL_RATES, CONFIG, groupByZone]);
 
   const quote = calculateQuote();
   const hasConfig = quote.lineItems.length > 0;
@@ -794,7 +822,7 @@ function EnfuzeConfigurator({ session, profile }) {
           { text: "Qty", style: "tableHeader", alignment: "center" },
         ];
 
-    const equipmentRows = quote.lineItems.map((item) => {
+    const lineToRow = (item) => {
       const name = PRODUCTS[item.sku]?.name || item.sku;
       return viewMode === "itemized"
         ? [
@@ -809,26 +837,36 @@ function EnfuzeConfigurator({ session, profile }) {
             { text: name, style: "tableCell" },
             { text: String(item.qty), style: "tableCell", alignment: "center" },
           ];
+    };
+
+    const tableLayout = {
+      hLineWidth: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? 1 : 0.5,
+      hLineColor: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? ACCENT : BORDER,
+      vLineWidth: () => 0,
+      paddingLeft: () => 6,
+      paddingRight: () => 6,
+      paddingTop: () => 5,
+      paddingBottom: () => 5,
+      fillColor: (rowIndex) => (rowIndex === 0 ? "#f7f9fb" : null),
+    };
+    const tableWidths = viewMode === "itemized" ? [80, "*", 30, 65, 75] : [100, "*", 40];
+
+    const buildTable = (lines) => ({
+      table: { headerRows: 1, widths: tableWidths, body: [equipmentHeader, ...lines.map(lineToRow)] },
+      layout: tableLayout,
+      margin: [0, 8, 0, 0],
     });
 
-    const equipmentTable = {
-      table: {
-        headerRows: 1,
-        widths: viewMode === "itemized" ? [80, "*", 30, 65, 75] : [100, "*", 40],
-        body: [equipmentHeader, ...equipmentRows],
-      },
-      layout: {
-        hLineWidth: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? 1 : 0.5,
-        hLineColor: (i, node) => (i === 0 || i === 1 || i === node.table.body.length) ? ACCENT : BORDER,
-        vLineWidth: () => 0,
-        paddingLeft: () => 6,
-        paddingRight: () => 6,
-        paddingTop: () => 5,
-        paddingBottom: () => 5,
-        fillColor: (rowIndex) => (rowIndex === 0 ? "#f7f9fb" : null),
-      },
-      margin: [0, 8, 0, 0],
-    };
+    // Equipment block: either a single flat table, or per-zone tables with subheadings.
+    const equipmentBlock = [];
+    if (groupByZone && quote.zoneGroups && quote.zoneGroups.length > 0) {
+      quote.zoneGroups.forEach((group, gi) => {
+        equipmentBlock.push({ text: group.name.toUpperCase(), style: "zoneHeader", margin: [0, gi === 0 ? 4 : 12, 0, 4] });
+        equipmentBlock.push(buildTable(group.lines));
+      });
+    } else {
+      equipmentBlock.push(buildTable(quote.lineItems));
+    }
 
     // Installation table (itemized mode only)
     const installSection = [];
@@ -908,7 +946,7 @@ function EnfuzeConfigurator({ session, profile }) {
         ...billToBlock,
         ...projectBlock,
         { text: "EQUIPMENT", style: "sectionLabel", margin: [0, 20, 0, 6] },
-        equipmentTable,
+        ...equipmentBlock,
         ...installSection,
         totalsTable,
       ],
@@ -924,6 +962,7 @@ function EnfuzeConfigurator({ session, profile }) {
         companyMeta:   { fontSize: 9, color: MUTED, margin: [0, 0, 0, 1] },
         docTitle:      { fontSize: 20, bold: true, color: ACCENT, characterSpacing: 1 },
         sectionLabel:  { fontSize: 9, bold: true, color: ACCENT, characterSpacing: 1 },
+        zoneHeader:    { fontSize: 9, bold: true, color: ACCENT, characterSpacing: 0.8 },
         tableHeader:   { fontSize: 9, bold: true, color: ACCENT, characterSpacing: 0.5 },
         tableCell:     { fontSize: 9, color: INK },
         tableCellMono: { fontSize: 8, color: MUTED },
@@ -979,15 +1018,25 @@ function EnfuzeConfigurator({ session, profile }) {
       ...(customerPhone   ? [[customerPhone]]   : []),
       [],
       ["EQUIPMENT"],
-      viewMode === "itemized"
-        ? ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"]
-        : ["SKU", "Description", "Qty"],
     ];
-    const equipRows = quote.lineItems.map((item) =>
-      viewMode === "itemized"
-        ? [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]
-        : [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty]
-    );
+    const equipHeaderRow = viewMode === "itemized"
+      ? ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"]
+      : ["SKU", "Description", "Qty"];
+    const lineToArr = (item) => viewMode === "itemized"
+      ? [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]
+      : [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty];
+    const equipRows = [];
+    if (groupByZone && quote.zoneGroups && quote.zoneGroups.length > 0) {
+      quote.zoneGroups.forEach((group, gi) => {
+        if (gi > 0) equipRows.push([]);
+        equipRows.push([group.name.toUpperCase()]);
+        equipRows.push(equipHeaderRow);
+        group.lines.forEach((item) => equipRows.push(lineToArr(item)));
+      });
+    } else {
+      equipRows.push(equipHeaderRow);
+      quote.lineItems.forEach((item) => equipRows.push(lineToArr(item)));
+    }
     const installSection = viewMode === "summary" || !quote.installEnabled
       ? []
       : [[], ["INSTALLATION"], ["Description", "Qty", "Rate", "Total"], ...quote.installItems.map((item) => [item.desc, item.qty, item.rate, item.total])];
@@ -1030,6 +1079,7 @@ function EnfuzeConfigurator({ session, profile }) {
       cablePwr12,
       forcePlusAmp,
       viewMode,
+      groupByZone,
     };
     // Auto-generate proposal number on first save if the user didn't type one.
     let finalProposalNumber = proposalNumber.trim();
@@ -1100,12 +1150,22 @@ function EnfuzeConfigurator({ session, profile }) {
       [],
       ["EQUIPMENT"],
     ];
-    if (viewMode === "itemized") {
-      rows.push(["SKU", "Description", "Qty", "Unit Price", "Ext. Price"]);
-      quote.lineItems.forEach((item) => rows.push([item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]));
+    const csvHeaderRow = viewMode === "itemized"
+      ? ["SKU", "Description", "Qty", "Unit Price", "Ext. Price"]
+      : ["SKU", "Description", "Qty"];
+    const csvLineRow = (item) => viewMode === "itemized"
+      ? [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty, item.price, item.qty * item.price]
+      : [item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty];
+    if (groupByZone && quote.zoneGroups && quote.zoneGroups.length > 0) {
+      quote.zoneGroups.forEach((group, gi) => {
+        if (gi > 0) rows.push([]);
+        rows.push([group.name.toUpperCase()]);
+        rows.push(csvHeaderRow);
+        group.lines.forEach((item) => rows.push(csvLineRow(item)));
+      });
     } else {
-      rows.push(["SKU", "Description", "Qty"]);
-      quote.lineItems.forEach((item) => rows.push([item.sku, PRODUCTS[item.sku]?.name || item.sku, item.qty]));
+      rows.push(csvHeaderRow);
+      quote.lineItems.forEach((item) => rows.push(csvLineRow(item)));
     }
     if (viewMode === "itemized" && quote.installEnabled) {
       rows.push([], ["INSTALLATION"]);
@@ -1356,12 +1416,18 @@ function EnfuzeConfigurator({ session, profile }) {
             const subTotal = sumLineQty(subLines);
             return (
               <div key={zone.id} style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, marginBottom: 16, border: "1px solid #dce3ed" }}>
-                <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>
-                  Audio Zone {i + 1}
-                  <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93", marginLeft: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#6b7c93", textTransform: "uppercase", letterSpacing: 1 }}>Audio Zone {i + 1}</span>
+                  <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93" }}>
                     ({(forcePlusAmp || speakerTotal > CONFIG.amp_upgrade_threshold) ? "Plus Amp" : "Standard Amp"} • {speakerTotal}/{CONFIG.max_speakers_per_zone} speakers{subTotal > 0 ? ` • ${subTotal}/${CONFIG.max_subs_per_zone} subs` : ""})
                   </span>
-                </h3>
+                </div>
+                <input
+                  value={zone.name || ""}
+                  onChange={(e) => setAudioZones((prev) => prev.map((z, idx) => idx === i ? { ...z, name: e.target.value } : z))}
+                  placeholder={`e.g. Pool Area, Front Porch…`}
+                  style={{ width: "100%", fontSize: 16, fontWeight: 600, color: "#203a43", padding: "8px 12px", marginBottom: 16, border: "1px solid #dce3ed", borderRadius: 8, background: "#fff", fontFamily: "inherit", outline: "none" }}
+                />
 
                 <LineSection
                   title="Speakers"
@@ -1429,12 +1495,18 @@ function EnfuzeConfigurator({ session, profile }) {
           </div>
           {insectZones.map((zone, i) => (
             <div key={zone.id} style={{ background: "#f0f4f8", borderRadius: 12, padding: 20, marginBottom: 16, border: "1px solid #dce3ed" }}>
-              <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 600, color: "#203a43" }}>
-                Insect Zone {i + 1}
-                <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93", marginLeft: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#6b7c93", textTransform: "uppercase", letterSpacing: 1 }}>Insect Zone {i + 1}</span>
+                <span style={{ fontSize: 12, fontWeight: 400, color: "#6b7c93" }}>
                   (1 Hub • {zone.repellers}/{CONFIG.max_repellers_per_zone} repellers)
                 </span>
-              </h3>
+              </div>
+              <input
+                value={zone.name || ""}
+                onChange={(e) => setInsectZones((prev) => prev.map((z, idx) => idx === i ? { ...z, name: e.target.value } : z))}
+                placeholder={`e.g. Back Patio, Fire Pit…`}
+                style={{ width: "100%", fontSize: 16, fontWeight: 600, color: "#203a43", padding: "8px 12px", marginBottom: 16, border: "1px solid #dce3ed", borderRadius: 8, background: "#fff", fontFamily: "inherit", outline: "none" }}
+              />
               <div>
                 <Label>Repellers</Label>
                 <NumberInput value={zone.repellers} onChange={(v) => updateInsectZone(i, "repellers", v)} min={0} max={CONFIG.max_repellers_per_zone} />
@@ -1527,52 +1599,113 @@ function EnfuzeConfigurator({ session, profile }) {
               </button>
             </div>
           </div>
-          {/* View toggle: Itemized vs Summary. Applies to equipment + installation + exports. */}
-          <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, fontSize: 13, color: "#6b7c93", marginBottom: 16 }}>
-            <span style={{ fontWeight: viewMode === "itemized" ? 600 : 400, color: viewMode === "itemized" ? "#203a43" : "#6b7c93" }}>Itemized</span>
-            <div
-              onClick={() => setViewMode(viewMode === "itemized" ? "summary" : "itemized")}
-              style={{ width: 44, height: 24, borderRadius: 12, background: viewMode === "summary" ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
-              role="switch"
-              aria-checked={viewMode === "summary"}
-              aria-label="Toggle between itemized and summary views"
-            >
-              <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: viewMode === "summary" ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+          {/* View toggles: Itemized/Summary + Group by Zone. Apply to on-screen + all exports. */}
+          <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 20, flexWrap: "wrap", fontSize: 13, color: "#6b7c93", marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontWeight: viewMode === "itemized" ? 600 : 400, color: viewMode === "itemized" ? "#203a43" : "#6b7c93" }}>Itemized</span>
+              <div
+                onClick={() => setViewMode(viewMode === "itemized" ? "summary" : "itemized")}
+                style={{ width: 44, height: 24, borderRadius: 12, background: viewMode === "summary" ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
+                role="switch"
+                aria-checked={viewMode === "summary"}
+                aria-label="Toggle between itemized and summary views"
+              >
+                <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: viewMode === "summary" ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+              </div>
+              <span style={{ fontWeight: viewMode === "summary" ? 600 : 400, color: viewMode === "summary" ? "#203a43" : "#6b7c93" }}>Summary</span>
             </div>
-            <span style={{ fontWeight: viewMode === "summary" ? 600 : 400, color: viewMode === "summary" ? "#203a43" : "#6b7c93" }}>Summary</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ color: "#6b7c93" }}>Group by zone</span>
+              <div
+                onClick={() => setGroupByZone((v) => !v)}
+                style={{ width: 44, height: 24, borderRadius: 12, background: groupByZone ? "#203a43" : "#dce3ed", cursor: "pointer", position: "relative", transition: "background 0.2s" }}
+                role="switch"
+                aria-checked={groupByZone}
+                aria-label="Toggle grouping of products by zone"
+              >
+                <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: groupByZone ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 700, color: groupByZone ? "#203a43" : "#6b7c93", textTransform: "uppercase", letterSpacing: 0.5, minWidth: 24 }}>{groupByZone ? "On" : "Off"}</span>
+            </div>
           </div>
 
           {/* Equipment */}
           <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 600, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>Equipment</h3>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 24 }}>
-              <thead>
-                <tr style={{ borderBottom: "2px solid #203a43" }}>
-                  <th style={thStyle}>SKU</th>
-                  <th style={thStyle}>Description</th>
-                  <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
-                  {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Unit Price</th>}
-                  {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Ext. Price</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {quote.lineItems.map((item, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
-                    <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#6b7c93" }}>{item.sku}</td>
-                    <td style={tdStyle}>{PRODUCTS[item.sku]?.name || item.sku}</td>
-                    <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
-                    {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right" }}>${item.price.toLocaleString()}</td>}
-                    {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${(item.qty * item.price).toLocaleString()}</td>}
-                  </tr>
-                ))}
+            {groupByZone ? (
+              <>
+                {quote.zoneGroups.map((group) => {
+                  const groupTotal = group.lines.reduce((s, l) => s + l.qty * l.price, 0);
+                  return (
+                    <div key={group.id} style={{ marginBottom: 20 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4, paddingBottom: 4, borderBottom: "1px solid #cbd5e0" }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#203a43", textTransform: "uppercase", letterSpacing: 1 }}>{group.name}</span>
+                        {viewMode === "itemized" && <span style={{ fontSize: 12, color: "#6b7c93" }}>${groupTotal.toLocaleString()}</span>}
+                      </div>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid #e2e8f0" }}>
+                            <th style={thStyle}>SKU</th>
+                            <th style={thStyle}>Description</th>
+                            <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
+                            {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Unit Price</th>}
+                            {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Ext. Price</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.lines.map((item, i) => (
+                            <tr key={i} style={{ borderBottom: "1px solid #edf2f7" }}>
+                              <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#6b7c93" }}>{item.sku}</td>
+                              <td style={tdStyle}>{PRODUCTS[item.sku]?.name || item.sku}</td>
+                              <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
+                              {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right" }}>${item.price.toLocaleString()}</td>}
+                              {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${(item.qty * item.price).toLocaleString()}</td>}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
                 {viewMode === "itemized" && (
-                  <tr style={{ borderTop: "2px solid #203a43" }}>
-                    <td colSpan={4} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Equipment Subtotal</td>
-                    <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.equipmentTotal.toLocaleString()}</td>
-                  </tr>
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 24, paddingTop: 10, borderTop: "2px solid #203a43" }}>
+                    <div style={{ display: "flex", gap: 24, fontSize: 14 }}>
+                      <span style={{ fontWeight: 700, color: "#1a1a2e" }}>Equipment Subtotal</span>
+                      <span style={{ fontWeight: 700, color: "#203a43" }}>${quote.equipmentTotal.toLocaleString()}</span>
+                    </div>
+                  </div>
                 )}
-              </tbody>
-            </table>
+              </>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 24 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid #203a43" }}>
+                    <th style={thStyle}>SKU</th>
+                    <th style={thStyle}>Description</th>
+                    <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
+                    {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Unit Price</th>}
+                    {viewMode === "itemized" && <th style={{ ...thStyle, textAlign: "right" }}>Ext. Price</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {quote.lineItems.map((item, i) => (
+                    <tr key={i} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                      <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#6b7c93" }}>{item.sku}</td>
+                      <td style={tdStyle}>{PRODUCTS[item.sku]?.name || item.sku}</td>
+                      <td style={{ ...tdStyle, textAlign: "center" }}>{item.qty}</td>
+                      {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right" }}>${item.price.toLocaleString()}</td>}
+                      {viewMode === "itemized" && <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>${(item.qty * item.price).toLocaleString()}</td>}
+                    </tr>
+                  ))}
+                  {viewMode === "itemized" && (
+                    <tr style={{ borderTop: "2px solid #203a43" }}>
+                      <td colSpan={4} style={{ ...tdStyle, fontWeight: 700, textAlign: "right" }}>Equipment Subtotal</td>
+                      <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#203a43" }}>${quote.equipmentTotal.toLocaleString()}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            )}
           </div>
 
           {/* Installation — only in itemized view */}
